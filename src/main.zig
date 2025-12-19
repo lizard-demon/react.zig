@@ -9,10 +9,14 @@ pub fn Framework(comptime State: type) type {
 
         data: State = .{},
 
-        pub dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
+        dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
 
         pub fn isDirty(self: *const Self, comptime field: Field) bool {
             return self.dirty.isSet(@intFromEnum(field));
+        }
+
+        pub fn isAnyDirty(self: *const Self) bool {
+            return self.dirty.count() > 0;
         }
 
         pub fn get(self: *const Self, comptime field: Field) std.meta.fieldInfo(State, field).type {
