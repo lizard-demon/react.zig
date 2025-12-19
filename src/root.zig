@@ -32,7 +32,7 @@ pub fn Framework(comptime State: type, comptime Context: type) type {
                 }
             }
 
-            if (@hasDecl(Context, "react")) self.ctx.react();
+            if (@hasDecl(Context, "react")) self.ctx.react(&self.data);
         }
 
         fn recurse(self: *Self, comptime f: Field, v: anytype, comptime visited: anytype) void {
