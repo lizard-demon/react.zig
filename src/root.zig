@@ -6,35 +6,47 @@ pub fn Framework(comptime State: type) type {
         const Self = @This();
         const Field = std.meta.FieldEnum(State);
         const FieldCount = std.meta.fields(State).len;
+        _data: State = .{},
+        _dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
 
-        data: State = .{},
+        pub fn dirty(self: *const Self, comptime fields: anytype) bool {
+            const T = @TypeOf(fields);
+            const info = @typeInfo(T);
 
-        dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
+            switch (info) {
+                .@"struct" => |s| {
+                    if (s.fields.len == 0) {
+                        return self._dirty.count() > 0;
+                    }
 
-        pub fn isDirty(self: *const Self, comptime field: Field) bool {
-            return self.dirty.isSet(@intFromEnum(field));
-        }
+                    inline for (s.fields) |f| {
+                        const field_val = @field(fields, f.name);
+                        const actual_field = @as(Field, field_val);
+                        if (self._dirty.isSet(@intFromEnum(actual_field))) return true;
+                    }
+                },
+                else => @compileError("Expected a tuple or struct of fields, found " ++ @typeName(T)),
+            }
 
-        pub fn isAnyDirty(self: *const Self) bool {
-            return self.dirty.count() > 0;
+            return false;
         }
 
         pub fn get(self: *const Self, comptime field: Field) std.meta.fieldInfo(State, field).type {
-            return @field(self.data, @tagName(field));
+            return @field(self._data, @tagName(field));
         }
 
         pub fn set(self: *Self, comptime field: Field, value: anytype) void {
-            self.dirty = std.StaticBitSet(FieldCount).initEmpty();
+            self._dirty = std.StaticBitSet(FieldCount).initEmpty();
             self.recurse(field, value, .{field});
         }
 
         fn recurse(self: *Self, comptime field: Field, value: anytype, comptime visited: anytype) void {
-            const current = @field(self.data, @tagName(field));
+            const current = @field(self._data, @tagName(field));
             
             // Only update and trigger reactions if the value actually changed
             if (!std.meta.eql(current, value)) {
-                @field(self.data, @tagName(field)) = value;
-                self.dirty.set(@intFromEnum(field));
+                @field(self._data, @tagName(field)) = value;
+                self._dirty.set(@intFromEnum(field));
 
                 if (@hasDecl(State, "react")) {
                     // Dependency Inject a Cicular Dependency Checker
