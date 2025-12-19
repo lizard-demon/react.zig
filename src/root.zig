@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn Framework(comptime State: type) type {
+pub fn Framework(comptime State: type, comptime Context: type) type {
     return struct {
         const Self = @This();
         const Field = std.meta.FieldEnum(State);
@@ -8,6 +8,8 @@ pub fn Framework(comptime State: type) type {
 
         data: State = .{},
         dirty: std.StaticBitSet(FCount) = std.StaticBitSet(FCount).initEmpty(),
+        
+        ctx: Context,
 
         pub fn get(self: *const Self, comptime f: Field) std.meta.fieldInfo(State, f).type {
             return @field(self.data, @tagName(f));
@@ -17,15 +19,12 @@ pub fn Framework(comptime State: type) type {
             self.dirty = std.StaticBitSet(FCount).initEmpty();
             self.recurse(f, v, .{f});
 
-            // Every dirty field that is a widget gets notified that it changed.
-            inline for (std.meta.fields(State)) |field_info| {
-                const f_enum = @field(Field, field_info.name);
+            inline for (std.meta.fields(State)) |info| {
+                const f_enum = @field(Field, info.name);
                 if (self.dirty.isSet(@intFromEnum(f_enum))) {
-                    const comp = @field(self.data, field_info.name);
-                    const TComp = @TypeOf(comp);
-                    if (@typeInfo(TComp) == .@"struct" and @hasDecl(TComp, "react")) {
-                        // The component reacts to its own mutation
-                        comp.react();
+                    const comp = @field(self.data, info.name);
+                    if (@hasDecl(@TypeOf(comp), "react")) {
+                        @field(self.data, info.name).react(&self.ctx);
                     }
                 }
             }
@@ -41,7 +40,7 @@ pub fn Framework(comptime State: type) type {
                     p: *Self,
                     pub fn get(c: @This(), comptime f2: Field) std.meta.fieldInfo(State, f2).type { return c.p.get(f2); }
                     pub fn set(c: @This(), comptime nf: Field, nv: std.meta.fieldInfo(State, nf).type) void {
-                        inline for (visited) |prev| { if (nf == prev) @compileError("Cycle: " ++ @tagName(nf)); }
+                        inline for (visited) |prev| { if (nf == prev) @compileError("Cycle!"); }
                         c.p.recurse(nf, nv, visited ++ .{nf});
                     }
                 };
