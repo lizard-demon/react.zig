@@ -10,10 +10,6 @@ pub fn Framework(comptime State: type, comptime Context: type) type {
         dirty: std.StaticBitSet(FCount) = std.StaticBitSet(FCount).initEmpty(),
         ctx: Context,
 
-        pub fn init(initial_ctx: Context) Self {
-            return .{ .ctx = initial_ctx };
-        }
-
         pub fn get(self: *const Self, comptime f: Field) std.meta.fieldInfo(State, f).type {
             return @field(self.data, @tagName(f));
         }
