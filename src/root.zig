@@ -1,71 +1,84 @@
 const std = @import("std");
-const react = @import("react");
 
 pub fn Framework(comptime State: type) type {
     return struct {
         const Self = @This();
         const Field = std.meta.FieldEnum(State);
         const FieldCount = std.meta.fields(State).len;
+        const BitSet = std.StaticBitSet(FieldCount);
+
         _data: State = .{},
-        _dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
+        
+        dirty: struct {
+            _bits: BitSet = BitSet.initEmpty(),
 
-        pub fn dirty(self: *const Self, comptime fields: anytype) bool {
-            const T = @TypeOf(fields);
-            const info = @typeInfo(T);
-
-            switch (info) {
-                .@"struct" => |s| {
-                    if (s.fields.len == 0) {
-                        return self._dirty.count() > 0;
-                    }
-
-                    inline for (s.fields) |f| {
-                        const field_val = @field(fields, f.name);
-                        const actual_field = @as(Field, field_val);
-                        if (self._dirty.isSet(@intFromEnum(actual_field))) return true;
-                    }
-                },
-                else => @compileError("Expected a tuple or struct of fields, found " ++ @typeName(T)),
+            pub fn get(self: @This(), comptime fields: anytype) bool {
+                const T = @TypeOf(fields);
+                switch (@typeInfo(T)) {
+                    .@"struct" => |s| {
+                        if (s.fields.len == 0) return self._bits.count() > 0;
+                        inline for (s.fields) |f| {
+                            const val = @field(fields, f.name);
+                            if (self._bits.isSet(@intFromEnum(@as(Field, val)))) return true;
+                        }
+                    },
+                    else => {}, // Catch-all for safety
+                }
+                return false;
             }
 
-            return false;
-        }
+            pub fn set(self: *@This(), value: bool, comptime fields: anytype) void {
+                const info = @typeInfo(@TypeOf(fields));
+                if (info.@"struct".fields.len == 0) {
+                    self._bits = if (value) BitSet.initFull() else BitSet.initEmpty();
+                    return;
+                }
+                inline for (info.@"struct".fields) |f| {
+                    const idx = @intFromEnum(@as(Field, @field(fields, f.name)));
+                    if (value) self._bits.set(idx) else self._bits.unset(idx);
+                }
+            }
+        } = .{},
 
         pub fn get(self: *const Self, comptime field: Field) std.meta.fieldInfo(State, field).type {
             return @field(self._data, @tagName(field));
         }
 
-        pub fn set(self: *Self, comptime field: Field, value: anytype) void {
-            self._dirty = std.StaticBitSet(FieldCount).initEmpty();
+        pub fn set(self: *Self, comptime field: Field, value: std.meta.fieldInfo(State, field).type) void {
+            self.dirty.set(false, .{}); 
             self.recurse(field, value, .{field});
+            
+            inline for (std.meta.fields(State)) |f| {
+                const FEnum = @field(Field, f.name);
+                if (self.dirty.get(.{FEnum})) {
+                    const component = @field(self._data, f.name);
+                    const TComp = @TypeOf(component);
+                    if (@typeInfo(TComp) == .@"struct" and @hasDecl(TComp, "draw")) {
+                        component.draw();
+                    }
+                }
+            }
         }
 
         fn recurse(self: *Self, comptime field: Field, value: anytype, comptime visited: anytype) void {
             const current = @field(self._data, @tagName(field));
-            
-            // Only update and trigger reactions if the value actually changed
             if (!std.meta.eql(current, value)) {
                 @field(self._data, @tagName(field)) = value;
-                self._dirty.set(@intFromEnum(field));
+                self.dirty._bits.set(@intFromEnum(field));
 
                 if (@hasDecl(State, "react")) {
-                    // Dependency Inject a Circular Dependency Checker
                     const Private = struct {
                         fw: *Self,
-                        pub fn get(c: @This(), comptime f: Field) std.meta.fieldInfo(State, f).type {
-                            return c.fw.get(f);
-                        }
-                        pub fn set(c: @This(), comptime next_f: Field, next_val: anytype) void {
-                            inline for (visited) |prev| {
-                                if (next_f == prev) @compileError("Circular Dependency: " ++ @tagName(next_f));
-                            }
-                            c.fw.recurse(next_f, next_val, visited ++ .{next_f});
+                        pub fn get(p: @This(), comptime f: Field) std.meta.fieldInfo(State, f).type { return p.fw.get(f); }
+                        // Recursive Proxy also uses explicit typing for safety
+                        pub fn set(p: @This(), comptime nf: Field, nv: std.meta.fieldInfo(State, nf).type) void {
+                            inline for (visited) |prev| { if (nf == prev) @compileError("Cycle!"); }
+                            p.fw.recurse(nf, nv, visited ++ .{nf});
                         }
                     };
                     State.react(Private{ .fw = self }, field);
                 }
             }
         }
-
     };
 }
