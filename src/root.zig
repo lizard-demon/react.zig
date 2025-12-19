@@ -1,52 +1,59 @@
 const std = @import("std");
+const react = @import("react");
 
 pub fn Framework(comptime State: type) type {
     return struct {
         const Self = @This();
         const Field = std.meta.FieldEnum(State);
+        const FieldCount = std.meta.fields(State).len;
 
         data: State = .{},
+
+        dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
+
+        pub fn isDirty(self: *const Self, comptime field: Field) bool {
+            return self.dirty.isSet(@intFromEnum(field));
+        }
+
+        pub fn isAnyDirty(self: *const Self) bool {
+            return self.dirty.count() > 0;
+        }
 
         pub fn get(self: *const Self, comptime field: Field) std.meta.fieldInfo(State, field).type {
             return @field(self.data, @tagName(field));
         }
 
         pub fn set(self: *Self, comptime field: Field, value: anytype) void {
+            self.dirty = std.StaticBitSet(FieldCount).initEmpty();
             self.recurse(field, value, .{field});
         }
 
         fn recurse(self: *Self, comptime field: Field, value: anytype, comptime visited: anytype) void {
-            @field(self.data, @tagName(field)) = value;
-            if (@hasDecl(State, "react")) {
-                const Private = struct {
-                    fw: *Self,
+            const current = @field(self.data, @tagName(field));
+            
+            // Only update and trigger reactions if the value actually changed
+            if (!std.meta.eql(current, value)) {
+                @field(self.data, @tagName(field)) = value;
+                self.dirty.set(@intFromEnum(field));
 
-                    pub fn get(c: @This(), comptime f: Field) std.meta.fieldInfo(State, f).type {
-                        return c.fw.get(f);
-                    }
-
-                    pub fn set(c: @This(), comptime f: Field, val: anytype) void {
-                        // inject dependency-check into set
-                        inline for (visited) |prev| {
-                            if (f == prev) {
-                                // pretty error
-                                const visited_str = comptime blk: {
-                                    var res: []const u8 = "";
-                                    for (visited) |node| {
-                                        res = res ++ @tagName(node) ++ " -> ";
-                                    }
-                                    break :blk res;
-                                };
-                                @compileError("Circular Dependency: " ++ visited_str ++ @tagName(f));
-                            }
+                if (@hasDecl(State, "react")) {
+                    // Dependency Inject a Cicular Dependency Checker
+                    const Private = struct {
+                        fw: *Self,
+                        pub fn get(c: @This(), comptime f: Field) std.meta.fieldInfo(State, f).type {
+                            return c.fw.get(f);
                         }
-                        // else set
-                        c.fw.recurse(f, val, visited ++ .{f});
-                    }
-                };
-
-                State.react(Private{ .fw = self }, field);
+                        pub fn set(c: @This(), comptime next_f: Field, next_val: anytype) void {
+                            inline for (visited) |prev| {
+                                if (next_f == prev) @compileError("Circular Dependency: " ++ @tagName(next_f));
+                            }
+                            c.fw.recurse(next_f, next_val, visited ++ .{next_f});
+                        }
+                    };
+                    State.react(Private{ .fw = self }, field);
+                }
             }
         }
+
     };
 }
