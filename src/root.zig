@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const Draw = @import("draw.zig");
+
 pub fn Framework(comptime State: type, comptime Context: type) type {
     return struct {
         const Self = @This();

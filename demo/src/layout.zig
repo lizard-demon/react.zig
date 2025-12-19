@@ -6,6 +6,7 @@ const inf: f32 = 3.4e38;
 pub const Dir = enum(u8) { h, v };
 pub const Align = enum(u8) { start, center, end };
 
+// MUST BE PUB to be accessed from main.zig
 pub const Widget = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -94,15 +95,15 @@ const compute = struct {
                 if (sz < 0) dims[i] = per_weight * (-sz);
             }
         } else if (along and delta < -eps) {
-            var vals: [256]*f32 = undefined;
+            var ptrs: [256]*f32 = undefined;
             var limits: [256]f32 = undefined;
             var n: usize = 0;
             for (0..kids.len) |i| {
-                vals[n] = &dims[i];
+                ptrs[n] = &dims[i];
                 limits[n] = 0;
                 n += 1;
             }
-            distribute(vals[0..n], limits[0..n], delta, true);
+            distribute(ptrs[0..n], limits[0..n], delta, true);
         } else if (!along) {
             for (0..kids.len) |i| {
                 dims[i] = @min(dims[i], avail);
@@ -130,7 +131,7 @@ const compute = struct {
             content[dir] += if (dir == 0) child.w else child.h;
             content[1 - dir] = @max(content[1 - dir], if (dir == 0) child.h else child.w);
         }
-        if (kids.len > 0) content[dir] += gap * @as(f32, @floatFromInt(kids.len - 1));
+        if (kids.len > 1) content[dir] += gap * @as(f32, @floatFromInt(kids.len - 1));
 
         const parent_size: @Vector(2, f32) = .{ parent.w, parent.h };
         var off: @Vector(2, f32) = .{ parent.x + pd, parent.y + pd };
@@ -201,4 +202,3 @@ pub fn layout(value: anytype) void {
     n = 0;
     children.write(value, &buf, &n);
 }
-
