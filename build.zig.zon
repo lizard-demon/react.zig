@@ -1,0 +1,13 @@
+.{
+    .name = .react_zig,
+    .version = "0.0.0",
+    .fingerprint =  0xa245fbef60ab0b62,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
