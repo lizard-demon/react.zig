@@ -8,8 +8,11 @@ pub fn Framework(comptime State: type, comptime Context: type) type {
 
         data: State = .{},
         dirty: std.StaticBitSet(FCount) = std.StaticBitSet(FCount).initEmpty(),
-        
         ctx: Context,
+
+        pub fn init(initial_ctx: Context) Self {
+            return .{ .ctx = initial_ctx };
+        }
 
         pub fn get(self: *const Self, comptime f: Field) std.meta.fieldInfo(State, f).type {
             return @field(self.data, @tagName(f));
@@ -18,29 +21,36 @@ pub fn Framework(comptime State: type, comptime Context: type) type {
         pub fn set(self: *Self, comptime f: Field, v: std.meta.fieldInfo(State, f).type) void {
             self.dirty = std.StaticBitSet(FCount).initEmpty();
             self.recurse(f, v, .{f});
-
             inline for (std.meta.fields(State)) |info| {
                 const f_enum = @field(Field, info.name);
                 if (self.dirty.isSet(@intFromEnum(f_enum))) {
                     const comp = @field(self.data, info.name);
-                    if (@hasDecl(@TypeOf(comp), "react")) {
+                    const TComp = @TypeOf(comp);
+                    if (@typeInfo(TComp) == .@"struct" and @hasDecl(TComp, "react")) {
                         @field(self.data, info.name).react(&self.ctx);
                     }
                 }
             }
+
+            if (@hasDecl(Context, "react")) self.ctx.react();
         }
 
         fn recurse(self: *Self, comptime f: Field, v: anytype, comptime visited: anytype) void {
             if (std.meta.eql(@field(self.data, @tagName(f)), v)) return;
+
             @field(self.data, @tagName(f)) = v;
             self.dirty.set(@intFromEnum(f));
 
             if (@hasDecl(State, "react")) {
                 const Proxy = struct {
                     p: *Self,
-                    pub fn get(c: @This(), comptime f2: Field) std.meta.fieldInfo(State, f2).type { return c.p.get(f2); }
+                    pub fn get(c: @This(), comptime f2: Field) std.meta.fieldInfo(State, f2).type { 
+                        return c.p.get(f2); 
+                    }
                     pub fn set(c: @This(), comptime nf: Field, nv: std.meta.fieldInfo(State, nf).type) void {
-                        inline for (visited) |prev| { if (nf == prev) @compileError("Cycle!"); }
+                        inline for (visited) |prev| { 
+                            if (nf == prev) @compileError("Circular Dependency: " ++ @tagName(nf)); 
+                        }
                         c.p.recurse(nf, nv, visited ++ .{nf});
                     }
                 };
