@@ -49,7 +49,7 @@ pub fn Framework(comptime State: type) type {
                 self._dirty.set(@intFromEnum(field));
 
                 if (@hasDecl(State, "react")) {
-                    // Dependency Inject a Cicular Dependency Checker
+                    // Dependency Inject a Circular Dependency Checker
                     const Private = struct {
                         fw: *Self,
                         pub fn get(c: @This(), comptime f: Field) std.meta.fieldInfo(State, f).type {
