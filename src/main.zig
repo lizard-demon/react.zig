@@ -6,8 +6,14 @@ pub fn Framework(comptime State: type) type {
         const Self = @This();
         const Field = std.meta.FieldEnum(State);
         const FieldCount = std.meta.fields(State).len;
+
         data: State = .{},
-        dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
+
+        pub dirty: std.StaticBitSet(FieldCount) = std.StaticBitSet(FieldCount).initEmpty(),
+
+        pub fn isDirty(self: *const Self, comptime field: Field) bool {
+            return self.dirty.isSet(@intFromEnum(field));
+        }
 
         pub fn get(self: *const Self, comptime field: Field) std.meta.fieldInfo(State, field).type {
             return @field(self.data, @tagName(field));
@@ -16,10 +22,6 @@ pub fn Framework(comptime State: type) type {
         pub fn set(self: *Self, comptime field: Field, value: anytype) void {
             self.dirty = std.StaticBitSet(FieldCount).initEmpty();
             self.recurse(field, value, .{field});
-        }
-
-        pub fn isDirty(self: *const Self, comptime field: Field) bool {
-            return self.dirty.isSet(@intFromEnum(field));
         }
 
         fn recurse(self: *Self, comptime field: Field, value: anytype, comptime visited: anytype) void {
