@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/demo.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{

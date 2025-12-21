@@ -1,5 +1,4 @@
 const std = @import("std");
-pub const Draw = @import("draw.zig");
 
 pub fn Router(comptime State: type, comptime Logic: type, comptime Context: type) type {
     return struct {
@@ -12,13 +11,13 @@ pub fn Router(comptime State: type, comptime Logic: type, comptime Context: type
         pub fn Event(comptime T: type) type {
             return struct {
                 sys: *sys,
-                ctx: *Context, // <-- CHANGED: Now a pointer
+                ctx: *Context,
                 key: key,
                 old: T,
                 new: T,
 
-                pub fn emit(e: @This(), comptime k: key, v: std.meta.fieldInfo(State, k).type) void {
-                    e.sys.set(k, v);
+                pub fn emit(event: @This(), comptime k: key, v: std.meta.fieldInfo(State, k).type) void {
+                    event.sys.set(k, v);
                 }
             };
         }
@@ -37,7 +36,7 @@ pub fn Router(comptime State: type, comptime Logic: type, comptime Context: type
                 const E = Event(@TypeOf(v));
                 Logic.route(E{
                     .sys = s, 
-                    .ctx = &s.ctx, // <-- CHANGED: Pass by reference
+                    .ctx = &s.ctx,
                     .key = k, 
                     .old = old, 
                     .new = v
