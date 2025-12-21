@@ -1,6 +1,6 @@
 const std = @import("std");
 
-// --- 1. Primitives ---
+// --- 1. Graphics Primitives ---
 
 pub const Color = u32;
 pub const Vertex = extern struct { pos: [2]f32, uv: [2]f32, col: Color };
@@ -65,19 +65,17 @@ pub const List = struct {
 
 pub const Input = struct {
     x: f32 = 0, y: f32 = 0, down: bool = false,
-    // Transient state handled by engine
-    active: bool = false, // Was down previous frame?
+    active: bool = false,
 };
 
 pub const Layout = struct {
     x: f32 = 0, y: f32 = 0, w: f32 = 0, h: f32 = 0,
     sw: f32 = 0, sh: f32 = 0,
     dir: enum(u1) { h, v } = .h, pad: u16 = 0, gap: u16 = 0,
-    // State flags for visuals
     hover: bool = false, pressed: bool = false,
 };
 
-// --- 3. Store (Reactive Core) ---
+// --- 3. Reactive Store ---
 
 pub fn Store(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
@@ -98,11 +96,9 @@ pub fn Store(comptime State: type, comptime Logic: type, comptime Ctx: type) typ
 
 // --- 4. Systems ---
 
-/// 1. Layout Solver
 pub fn solve(root: anytype) void {
     if (!comptime hasLayout(@TypeOf(root.*))) return;
     
-    // Collect
     var buf: [256]Layout = undefined;
     var n: usize = 0;
     inline for (@typeInfo(@TypeOf(root.*)).@"struct".fields) |f| {
@@ -112,11 +108,9 @@ pub fn solve(root: anytype) void {
     }
     if (n == 0) return;
 
-    // Flex Math
     const p = &@field(root, "layout");
     flex(p, buf[0..n], 0); flex(p, buf[0..n], 1);
     
-    // Position
     var off: @Vector(2, f32) = .{ p.x + @as(f32,@floatFromInt(p.pad)), p.y + @as(f32,@floatFromInt(p.pad)) };
     const dir = @intFromEnum(p.dir);
     for (buf[0..n]) |*c| {
@@ -124,7 +118,6 @@ pub fn solve(root: anytype) void {
         off[dir] += (if (dir==0) c.w else c.h) + @as(f32, @floatFromInt(p.gap));
     }
 
-    // Write & Recurse
     n = 0;
     inline for (@typeInfo(@TypeOf(root.*)).@"struct".fields) |f| {
         if (!std.mem.eql(u8, f.name, "layout") and comptime hasLayout(f.type)) {
@@ -134,21 +127,16 @@ pub fn solve(root: anytype) void {
     }
 }
 
-/// 2. Input Handler (Duck-Typed)
-/// Walks the tree. If a widget is hit, it calls .onHover, .onPress, .onClick on the widget.
 pub fn handle(root: anytype, input: *Input, ctx: anytype) void {
     if (!comptime hasLayout(@TypeOf(root.*))) return;
     const l = &root.layout;
     l.hover = false; l.pressed = false;
 
-    // Hit Test
     const hit = (input.x >= l.x and input.x <= l.x + l.w and input.y >= l.y and input.y <= l.y + l.h);
-
-    // Recurse children (Top-down visual, Bottom-up logical for capturing)
     var captured = false;
     const fields = std.meta.fields(@TypeOf(root.*));
     inline for (0..fields.len) |i| {
-        const f = fields[fields.len - 1 - i]; // Reverse order
+        const f = fields[fields.len - 1 - i];
         if (!std.mem.eql(u8, f.name, "layout")) {
             const child = &@field(root, f.name);
             if (comptime hasLayout(@TypeOf(child.*))) {
@@ -160,30 +148,24 @@ pub fn handle(root: anytype, input: *Input, ctx: anytype) void {
         }
     }
 
-    // Process Node
     if (!captured and hit) {
         l.hover = true;
         if (@hasDecl(@TypeOf(root.*), "onHover")) root.onHover(ctx);
-
         if (input.down) {
             l.pressed = true;
             if (@hasDecl(@TypeOf(root.*), "onPress")) root.onPress(ctx);
         } else if (input.active) { 
-            // Released (Click)
-            // 'active' means it was down last frame. If it's up now, it's a click.
             if (@hasDecl(@TypeOf(root.*), "onClick")) root.onClick(ctx);
         }
     }
 }
 
-/// 3. Renderer (Duck-Typed)
 pub fn render(root: anytype, list: *List) void {
     visit(root, list, struct {
         fn call(l: *List, node: anytype) void {
             if (@hasDecl(@TypeOf(node.*), "draw")) {
                 node.draw(l);
             } else {
-                // Default Render
                 const lay = node.layout;
                 if (@hasField(@TypeOf(node.*), "color")) l.rect(lay.x, lay.y, lay.w, lay.h, node.color);
                 if (@hasField(@TypeOf(node.*), "label")) l.text(lay.x+5, lay.y+lay.h/2, node.label, 0xFFFFFFFF);
