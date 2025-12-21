@@ -1,5 +1,6 @@
 const std = @import("std");
 
+// --- 1. Low-Level Graphics (Vertex Buffer) ---
 pub const Color = u32;
 
 pub const Vertex = extern struct {
@@ -23,7 +24,7 @@ pub const List = struct {
     tex: ?*anyopaque = null,
 
     pub fn init(a: std.mem.Allocator) List { return .{ .alloc = a }; }
-
+    
     pub fn deinit(l: *List) void {
         l.vtx.deinit(l.alloc);
         l.idx.deinit(l.alloc);
@@ -61,7 +62,7 @@ pub const List = struct {
     pub fn pack(r: u8, g: u8, b: u8, a: u8) Color {
         return @as(u32, a)<<24 | @as(u32, b)<<16 | @as(u32, g)<<8 | @as(u32, r);
     }
-    
+
     fn reserve(l: *List, v_count: usize, i_count: usize) void {
         l.vtx.ensureUnusedCapacity(l.alloc, v_count) catch {};
         l.idx.ensureUnusedCapacity(l.alloc, i_count) catch {};
@@ -77,6 +78,7 @@ pub const List = struct {
     }
 };
 
+// --- 2. UI Layout Engine ---
 pub const Dir = enum(u1) { h, v };
 pub const Align = enum(u2) { start, center, end };
 
@@ -88,26 +90,30 @@ pub const Layout = struct {
     hover: bool = false, click: bool = false, pressed: bool = false,
 };
 
-pub fn Router(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
+// --- 3. Reactive Store (Architecture) ---
+pub fn Store(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
         const Sys = @This();
         const Key = std.meta.FieldEnum(State);
         state: State = .{},
         ctx: Ctx,
+        
+        /// Mutates state and triggers the reactive logic chain
         pub fn emit(s: *Sys, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
             const ptr = &@field(s.state, @tagName(k));
-            const old = ptr.*; // Capture OLD value
+            const old = ptr.*;
             if (std.meta.eql(old, v)) return;
-            ptr.* = v;         // Update NEW value
+            ptr.* = v;
             
-            // FIX: Pass .old and .new to the Logic handler
-            if (@hasDecl(Logic, "route")) Logic.route(.{ 
+            // "react" is the standard verb for responding to state changes
+            if (@hasDecl(Logic, "react")) Logic.react(.{ 
                 .sys=s, .ctx=&s.ctx, .key=k, .old=old, .new=v 
             });
         }
     };
 }
 
+// --- 4. Systems ---
 pub fn update(root: anytype, mx: f32, my: f32, down: bool) ?*anyopaque {
     if (!comptime hasLayout(@TypeOf(root.*))) return null;
     solve(root);
@@ -130,6 +136,7 @@ pub fn render(root: anytype, list: *List) void {
     }.call);
 }
 
+// --- Internal Implementation ---
 const InputCtx = struct { x: f32, y: f32, down: bool, hit: ?*anyopaque };
 
 fn hasLayout(comptime T: type) bool {
