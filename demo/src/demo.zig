@@ -38,13 +38,13 @@ const AppState = struct {
         layout: zui.Layout = .{ .sw=-1, .sh=-1, .pad=10, .gap=10 },
         inc: MyBtn = .{ .label = "Increment", .action = .Inc },
         dec: MyBtn = .{ .label = "Decrement", .action = .Dec, .color = zui.List.pack(70, 40, 40, 255) },
-        dsp: MyBtn = .{ .label = "Value: 0", .color = zui.List.pack(30, 30, 30, 255) },
     } = .{},
 };
 
 const Context = struct {
     gfx: zui.List,
     input: zui.Input = .{},
+    dirty: bool = true, // Start dirty
     render_count: usize = 0,
 };
 
@@ -52,13 +52,17 @@ const Logic = struct {
     pub fn react(e: anytype) void {
         if (e.key == .action) {
             switch (e.new) {
+                // Changing data does not automatically redraw.
+                // We will dirty the context when we actually update the visual label.
                 .Inc => e.sys.emit(.value, e.sys.state.value + 1),
                 .Dec => e.sys.emit(.value, e.sys.state.value - 1),
                 .None => {},
             }
         }
         if (e.key == .value) {
-            // (Format string here in real code)
+            std.debug.print("  [Logic] Value changed to {d}\n", .{e.new});
+            // HERE we decide this change is visual, so we flag dirty.
+            e.ctx.dirty = true;
         }
     }
 };
@@ -73,37 +77,40 @@ pub fn main() !void {
     app.emit(.layout, .{ .w=600, .h=400, .dir=.v, .pad=20 });
 
     const input_log = [_]struct{x: f32, y:f32, d: bool}{
-        .{ .x=40, .y=40, .d=false }, // Hover Start
+        .{ .x=40, .y=40, .d=false }, // Hover
         .{ .x=40, .y=40, .d=true },  // Press
-        .{ .x=40, .y=40, .d=false }, // Click (Value Change)
+        .{ .x=40, .y=40, .d=false }, // Click (Trigger Value)
         .{ .x=200, .y=200, .d=false}, // Move Away
     };
 
-    std.debug.print("\n--- Retained Mode Demo ---\n", .{});
+    std.debug.print("\n--- Explicit Dirty Control Demo ---\n", .{});
     
     var frame: usize = 0;
     var log_idx: usize = 0;
 
-    // Simulate 60 Frames
     while (frame < 60) : (frame += 1) {
-        // Inject Input (Simulate user doing stuff every 10 frames)
+        // 1. Update Input
         if (frame % 15 == 0 and log_idx < input_log.len) {
             const in = input_log[log_idx];
             app.ctx.input = .{ .x=in.x, .y=in.y, .down=in.d, .active=app.ctx.input.down };
             log_idx += 1;
         }
 
-        // 1. Tick: Returns TRUE if we need to redraw
-        if (app.tick()) {
+        // 2. Run Engine Pipeline (User Controlled)
+        // Solve Layout
+        if (app.ctx.dirty) zui.solve(&app.state);
+        // Handle Interactions (Will set ctx.dirty if visuals change)
+        zui.handle(&app.state, &app, &app.ctx);
+
+        // 3. Conditional Render
+        if (app.ctx.dirty) {
             app.ctx.render_count += 1;
-            
-            // 2. Render (Only if Dirty)
             app.ctx.gfx.clear();
             zui.render(&app.state, &app.ctx.gfx);
             app.ctx.gfx.cursor(app.ctx.input.x, app.ctx.input.y, 0xFFFF00FF);
             
-            // 3. Clear Dirty
-            app.dirty = false;
+            // Reset Flag
+            app.ctx.dirty = false;
         }
 
         const g = &app.ctx.gfx;

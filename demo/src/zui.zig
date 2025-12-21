@@ -1,6 +1,6 @@
 const std = @import("std");
 
-// --- 1. Graphics (The Cache) ---
+// --- 1. Graphics Primitives ---
 
 pub const Color = u32;
 pub const Vertex = extern struct { pos: [2]f32, uv: [2]f32, col: Color };
@@ -16,8 +16,7 @@ pub const List = struct {
 
     pub fn init(a: std.mem.Allocator) List { return .{ .alloc = a }; }
     pub fn deinit(l: *List) void { l.vtx.deinit(l.alloc); l.idx.deinit(l.alloc); l.cmd.deinit(l.alloc); }
-    
-    // In Retained Mode, we only clear when we intend to rebuild.
+
     pub fn clear(l: *List) void {
         l.vtx.clearRetainingCapacity(); l.idx.clearRetainingCapacity(); l.cmd.clearRetainingCapacity();
         l.cmd.append(l.alloc, .{ .elem_count=0, .clip_rect=l.clip, .texture_id=l.tex }) catch {};
@@ -66,7 +65,7 @@ pub const List = struct {
 
 pub const Input = struct {
     x: f32 = 0, y: f32 = 0, down: bool = false,
-    active: bool = false, // Previous frame down state
+    active: bool = false,
 };
 
 pub const Layout = struct {
@@ -76,39 +75,23 @@ pub const Layout = struct {
     hover: bool = false, pressed: bool = false,
 };
 
-// --- 3. Retained Store ---
+// --- 3. The Store (Pure Data) ---
 
 pub fn Store(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
         const Sys = @This();
         const Key = std.meta.FieldEnum(State);
-        
         state: State = .{},
         ctx: Ctx,
-        dirty: bool = true, // Force initial render
-
+        
         pub fn emit(s: *Sys, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
             const ptr = &@field(s.state, @tagName(k));
             const old = ptr.*;
             if (std.meta.eql(old, v)) return;
             ptr.* = v;
             
-            // DATA CHANGE -> INVALIDATE RENDER
-            s.dirty = true;
-            
+            // Dispatch to Logic. It is logic's job to set ctx.dirty = true
             if (@hasDecl(Logic, "react")) Logic.react(.{ .sys=s, .ctx=&s.ctx, .key=k, .old=old, .new=v });
-        }
-
-        // Helper to check if we should redraw
-        pub fn tick(s: *Sys) bool {
-            // Layout must run if dirty to ensure hit-testing is accurate
-            if (s.dirty) solve(&s.state);
-            
-            // Input pass: Checks for visual state changes (hover/press)
-            // If interaction changes visuals, handle() sets s.dirty = true
-            handle(&s.state, s, s.ctx.input);
-            
-            return s.dirty;
         }
     };
 }
@@ -146,19 +129,15 @@ pub fn solve(root: anytype) void {
     }
 }
 
-pub fn handle(root: anytype, sys: anytype, input: Input) void {
+pub fn handle(root: anytype, sys: anytype, ctx: anytype) void {
     if (!comptime hasLayout(@TypeOf(root.*))) return;
     const l = &root.layout;
-    
-    // 1. Capture Old State
-    const old_hover = l.hover;
-    const old_pressed = l.pressed;
+    const old_h = l.hover;
+    const old_p = l.pressed;
 
-    // 2. Hit Test
-    const hit = (input.x >= l.x and input.x <= l.x + l.w and input.y >= l.y and input.y <= l.y + l.h);
+    const hit = (ctx.input.x >= l.x and ctx.input.x <= l.x + l.w and ctx.input.y >= l.y and ctx.input.y <= l.y + l.h);
     var captured = false;
     
-    // 3. Recurse (Children)
     const fields = std.meta.fields(@TypeOf(root.*));
     inline for (0..fields.len) |i| {
         const f = fields[fields.len - 1 - i];
@@ -166,32 +145,30 @@ pub fn handle(root: anytype, sys: anytype, input: Input) void {
             const child = &@field(root, f.name);
             if (comptime hasLayout(@TypeOf(child.*))) {
                 if (!captured) {
-                    handle(child, sys, input);
+                    handle(child, sys, ctx);
                     if (child.layout.hover or child.layout.pressed) captured = true;
-                } else clearFlags(child, sys);
+                } else clearFlags(child, ctx);
             }
         }
     }
 
-    // 4. Determine New State
-    var new_hover = false;
-    var new_pressed = false;
+    var new_h = false;
+    var new_p = false;
 
     if (!captured and hit) {
-        new_hover = true;
-        if (input.down) {
-            new_pressed = true;
-        } else if (old_pressed) {
-            // Click Event (Down -> Up)
+        new_h = true;
+        if (ctx.input.down) {
+            new_p = true;
+        } else if (old_p) {
             if (@hasDecl(@TypeOf(root.*), "onClick")) root.onClick(.{ .sys = sys });
         }
     }
 
-    // 5. Diff & Dirty Check
-    if (old_hover != new_hover or old_pressed != new_pressed) {
-        l.hover = new_hover;
-        l.pressed = new_pressed;
-        sys.dirty = true;
+    // Interaction Change -> Set Dirty Flag in Context
+    if (old_h != new_h or old_p != new_p) {
+        l.hover = new_h;
+        l.pressed = new_p;
+        ctx.dirty = true;
     }
 }
 
@@ -226,16 +203,15 @@ fn visit(root: anytype, ctx: anytype, func: anytype) void {
     }
 }
 
-fn clearFlags(node: anytype, sys: anytype) void {
-    // Only set dirty if we are actually changing something from true to false
+fn clearFlags(node: anytype, ctx: anytype) void {
     if (node.layout.hover or node.layout.pressed) {
         node.layout.hover = false; 
         node.layout.pressed = false;
-        sys.dirty = true;
+        ctx.dirty = true;
     }
     inline for (std.meta.fields(@TypeOf(node.*))) |f| {
         if (!std.mem.eql(u8, f.name, "layout") and comptime hasLayout(f.type)) {
-            clearFlags(&@field(node, f.name), sys);
+            clearFlags(&@field(node, f.name), ctx);
         }
     }
 }
