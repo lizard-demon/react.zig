@@ -1,18 +1,16 @@
 const std = @import("std");
 
-// --- 1. The Low-Level Backend (ImGui Style) ---
-
-pub const Color = u32; // Packed 0xAABBGGRR
+pub const Color = u32;
 
 pub const Vertex = extern struct {
     pos: [2]f32,
-    uv:  [2]f32,
+    uv: [2]f32,
     col: Color,
 };
 
 pub const DrawCmd = struct {
-    elem_count: u32,       // Number of indices to draw
-    clip_rect:  [4]f32,    // Scissor rect (x, y, w, h)
+    elem_count: u32,
+    clip_rect: [4]f32,
     texture_id: ?*anyopaque,
 };
 
@@ -21,13 +19,11 @@ pub const List = struct {
     idx: std.ArrayListUnmanaged(u16) = .{},
     cmd: std.ArrayListUnmanaged(DrawCmd) = .{},
     alloc: std.mem.Allocator,
-
-    // State
-    clip_rect: [4]f32 = .{ -10000, -10000, 20000, 20000 },
-    texture: ?*anyopaque = null,
+    clip: [4]f32 = .{ -1e4, -1e4, 2e4, 2e4 },
+    tex: ?*anyopaque = null,
 
     pub fn init(a: std.mem.Allocator) List { return .{ .alloc = a }; }
-    
+
     pub fn deinit(l: *List) void {
         l.vtx.deinit(l.alloc);
         l.idx.deinit(l.alloc);
@@ -38,48 +34,36 @@ pub const List = struct {
         l.vtx.clearRetainingCapacity();
         l.idx.clearRetainingCapacity();
         l.cmd.clearRetainingCapacity();
-        // Start first command
-        l.cmd.append(l.alloc, .{ 
-            .elem_count = 0, 
-            .clip_rect = l.clip_rect, 
-            .texture_id = l.texture 
-        }) catch {};
+        l.cmd.append(l.alloc, .{ .elem_count=0, .clip_rect=l.clip, .texture_id=l.tex }) catch {};
     }
 
-    // --- Primitive Generators ---
-
-    pub fn pack(r: u8, g: u8, b: u8, a: u8) Color {
-        return @as(u32, a) << 24 | @as(u32, b) << 16 | @as(u32, g) << 8 | @as(u32, r);
-    }
-
-    pub fn rect(l: *List, x: f32, y: f32, w: f32, h: f32, col: Color) void {
-        l.reserve(4, 6);
-        const a = l.vtx.items.len; // Base index
-        const white = [2]f32{0, 0}; // UV for solid color (usually center of white pixel)
+    pub fn rect(l: *List, x: f32, y: f32, w: f32, h: f32, c: Color) void {
+        // FIX: Reserve memory BEFORE pushing
+        l.reserve(4, 6); 
         
-        // Push 4 Vertices
-        l.pushVtx(x,     y,     white, col); // TL
-        l.pushVtx(x + w, y,     white, col); // TR
-        l.pushVtx(x + w, y + h, white, col); // BR
-        l.pushVtx(x,     y + h, white, col); // BL
-
-        // Push 2 Triangles (6 Indices)
-        l.pushIdx(@intCast(a + 0)); l.pushIdx(@intCast(a + 1)); l.pushIdx(@intCast(a + 2));
-        l.pushIdx(@intCast(a + 0)); l.pushIdx(@intCast(a + 2)); l.pushIdx(@intCast(a + 3));
+        const i = @as(u16, @intCast(l.vtx.items.len));
+        const uv = [2]f32{0, 0};
+        l.pushVtx(x, y, uv, c);
+        l.pushVtx(x+w, y, uv, c);
+        l.pushVtx(x+w, y+h, uv, c);
+        l.pushVtx(x, y+h, uv, c);
+        l.pushIdx(i); l.pushIdx(i+1); l.pushIdx(i+2);
+        l.pushIdx(i); l.pushIdx(i+2); l.pushIdx(i+3);
     }
-    
-    // In a real engine, this pulls UVs from a Font Atlas.
-    // Here, we just draw small rects to simulate text layout.
-    pub fn text(l: *List, x: f32, y: f32, str: []const u8, col: Color) void {
+
+    pub fn text(l: *List, x: f32, y: f32, str: []const u8, c: Color) void {
         var cx = x;
         for (str) |char| {
             if (char == ' ') { cx += 4; continue; }
-            // Draw a tiny "glyph" box
-            l.rect(cx, y - 5, 5, 8, col); 
+            l.rect(cx, y-5, 5, 8, c); // rect() handles its own reservation
             cx += 6;
         }
     }
 
+    pub fn pack(r: u8, g: u8, b: u8, a: u8) Color {
+        return @as(u32, a)<<24 | @as(u32, b)<<16 | @as(u32, g)<<8 | @as(u32, r);
+    }
+    
     // --- Internal Helpers ---
 
     fn reserve(l: *List, v_count: usize, i_count: usize) void {
@@ -93,11 +77,9 @@ pub const List = struct {
 
     fn pushIdx(l: *List, i: u16) void {
         l.idx.appendAssumeCapacity(i);
-        l.cmd.items[l.cmd.items.len - 1].elem_count += 1;
+        l.cmd.items[l.cmd.items.len-1].elem_count += 1;
     }
 };
-
-// --- 2. UI Layout & State (Same as before) ---
 
 pub const Dir = enum(u1) { h, v };
 pub const Align = enum(u2) { start, center, end };
@@ -110,15 +92,13 @@ pub const Layout = struct {
     hover: bool = false, click: bool = false, pressed: bool = false,
 };
 
-// --- 3. Reactive Router (Same as before) ---
-
 pub fn Router(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
         const Sys = @This();
         const Key = std.meta.FieldEnum(State);
         state: State = .{},
         ctx: Ctx,
-        pub fn set(s: *Sys, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
+        pub fn emit(s: *Sys, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
             const ptr = &@field(s.state, @tagName(k));
             if (std.meta.eql(ptr.*, v)) return;
             ptr.* = v;
@@ -126,8 +106,6 @@ pub fn Router(comptime State: type, comptime Logic: type, comptime Ctx: type) ty
         }
     };
 }
-
-// --- 4. Systems ---
 
 pub fn update(root: anytype, mx: f32, my: f32, down: bool) ?*anyopaque {
     if (!comptime hasLayout(@TypeOf(root.*))) return null;
@@ -145,13 +123,11 @@ pub fn render(root: anytype, list: *List) void {
             } else {
                 const lay = node.layout;
                 if (@hasField(@TypeOf(node.*), "color")) l.rect(lay.x, lay.y, lay.w, lay.h, node.color);
-                if (@hasField(@TypeOf(node.*), "label")) l.text(lay.x+5, lay.y+lay.h/2, node.label, List.pack(255,255,255,255));
+                if (@hasField(@TypeOf(node.*), "label")) l.text(lay.x+5, lay.y+lay.h/2, node.label, 0xFFFFFFFF);
             }
         }
     }.call);
 }
-
-// --- 5. Internal Implementation (Layout Logic) ---
 
 const InputCtx = struct { x: f32, y: f32, down: bool, hit: ?*anyopaque };
 
@@ -179,18 +155,15 @@ fn solve(root: anytype) void {
         }
     }
     if (n == 0) return;
-    
     const p = &@field(root, "layout");
-    flex(p, buf[0..n], 0); 
+    flex(p, buf[0..n], 0);
     flex(p, buf[0..n], 1);
-    
     var off: @Vector(2, f32) = .{ p.x + @as(f32,@floatFromInt(p.pad)), p.y + @as(f32,@floatFromInt(p.pad)) };
     const dir = @intFromEnum(p.dir);
     for (buf[0..n]) |*c| {
         c.x = off[0]; c.y = off[1];
         off[dir] += (if (dir==0) c.w else c.h) + @as(f32, @floatFromInt(p.gap));
     }
-    
     n = 0;
     inline for (@typeInfo(@TypeOf(root.*)).@"struct".fields) |f| {
         if (!std.mem.eql(u8, f.name, "layout") and comptime hasLayout(f.type)) {
@@ -215,7 +188,6 @@ fn flex(p: *Layout, k: []Layout, ax: u1) void {
     const is_dir = @intFromEnum(p.dir) == ax;
     for (dim[0..k.len]) |v| used = if (is_dir) used + v else @max(used, v);
     if (is_dir) used += @floatFromInt(p.gap * @as(u16, @intCast(if (k.len>0) k.len-1 else 0)));
-    
     if (is_dir and grow > 0 and avail > used) {
         const unit = (avail - used) / grow;
         for (k, 0..) |*c, i| {
@@ -232,7 +204,6 @@ fn interact(node: anytype, ctx: *InputCtx) void {
     const l = &node.layout;
     l.click = false; l.hover = false;
     const hit = (ctx.x >= l.x and ctx.x <= l.x + l.w and ctx.y >= l.y and ctx.y <= l.y + l.h);
-    
     var captured = false;
     const fields = std.meta.fields(@TypeOf(node.*));
     inline for (0..fields.len) |i| {
@@ -249,14 +220,9 @@ fn interact(node: anytype, ctx: *InputCtx) void {
     }
     if (!captured and hit) {
         l.hover = true;
-        if (ctx.down) { 
-            l.pressed = true; 
-        } else if (l.pressed) {
-            l.pressed = false; l.click = true; ctx.hit = @ptrCast(node);
-        }
-    } else if (!hit) { 
-        l.hover = false; l.pressed = false; 
-    }
+        if (ctx.down) { l.pressed = true; }
+        else if (l.pressed) { l.pressed = false; l.click = true; ctx.hit = @ptrCast(node); }
+    } else if (!hit) { l.hover = false; l.pressed = false; }
 }
 
 fn clearFlags(node: anytype) void {
