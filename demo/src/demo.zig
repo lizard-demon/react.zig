@@ -10,10 +10,12 @@ pub fn Button(comptime ActionEnum: type) type {
         color: zui.Color = zui.List.pack(60, 60, 70, 255),
         action: ?ActionEnum = null, 
         
+        // Interaction: Emits via sys.emit
         pub fn onClick(self: *const @This(), ctx: anytype) void {
             if (self.action) |act| ctx.sys.emit(.action, act); 
         }
 
+        // Render: Draws to vertex list
         pub fn draw(self: *const @This(), list: *zui.List) void {
             var c = self.color;
             if (self.layout.pressed) c = zui.List.pack(200, 200, 200, 255)
@@ -49,12 +51,13 @@ const Logic = struct {
     pub fn react(flow: anytype, comptime field: anytype) void {
         switch (field) {
             .action => {
+                // Read from flow.data (safe), write via flow.emit (safe)
                 if (flow.data.action == .Click) {
                     flow.emit(.val, flow.data.val + 1);
                 }
             },
             .val => {
-                std.debug.print("Value is now: {d}\n", .{flow.data.val});
+                std.debug.print("Value updated to: {d}\n", .{flow.data.val});
             },
             else => {},
         }
@@ -65,7 +68,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     
-    // Store is now generic. It doesn't know about zui.handle()
+    // Store is purely data + logic. It doesn't know about UI systems.
     var app = zui.Store(AppData, Logic, Context){ .ctx = .{ .gfx = zui.List.init(gpa.allocator()) } };
     defer app.ctx.gfx.deinit();
 
@@ -83,7 +86,6 @@ pub fn main() !void {
     var idx: usize = 0;
 
     while (frame < 20) : (frame += 1) {
-        // 1. Update Input
         if (frame % 5 == 0 and idx < input_log.len) {
             const in = input_log[idx];
             app.ctx.input = .{ .x=in.x, .y=in.y, .down=in.d, .active=app.ctx.input.down };
@@ -91,11 +93,10 @@ pub fn main() !void {
         }
 
         if (app.dirty) {
-            // 2. Run Systems Manually (Decoupled)
-            zui.solve(&app.data);                     // Calculate Layout
-            zui.handle(&app.data, &app, &app.ctx);    // Process Input Interactions
+            // Manual Pipeline Composition
+            zui.solve(&app.data);                     
+            zui.handle(&app.data, &app, &app.ctx);    
             
-            // 3. Render
             app.ctx.gfx.clear();
             zui.render(&app.data, &app.ctx.gfx);
             app.dirty = false;
