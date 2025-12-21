@@ -6,23 +6,24 @@ const zui = @import("zui.zig");
 const Button = struct {
     layout: zui.Layout = .{ .w = 100, .sh = -1 },
     label: []const u8 = "Btn",
-    color: zui.Color = .{ .r=60, .g=60, .b=65 },
+    color: zui.Color = zui.List.pack(60, 60, 65, 255),
 
     pub fn draw(self: *const @This(), list: *zui.List) void {
         var c = self.color;
-        if (self.layout.pressed) { c = .{ .r=200, .g=50, .b=50 }; }
-        else if (self.layout.hover) { c.r += 30; c.g += 30; c.b += 30; }
+        // Simple Interaction Logic
+        if (self.layout.pressed) { c = zui.List.pack(200, 50, 50, 255); }
+        else if (self.layout.hover) { c = c + 0x00202020; } // Hacky lighten
         
         const l = self.layout;
         list.rect(l.x, l.y, l.w, l.h, c);
-        list.text(l.x+10, l.y+(l.h/2), self.label, .{ .r=255, .g=255, .b=255 });
+        list.text(l.x+10, l.y+(l.h/2), self.label, zui.List.pack(255,255,255,255));
     }
 };
 
 const Panel = struct {
     layout: zui.Layout = .{ .sw=-1, .sh=-1, .pad=5, .gap=5 },
-    color: zui.Color = .{ .r=30, .g=30, .b=30 },
-    ok: Button = .{ .label = "OK", .color = .{ .r=40, .g=80, .b=40 } },
+    color: zui.Color = zui.List.pack(30, 30, 30, 255),
+    ok: Button = .{ .label = "OK", .color = zui.List.pack(40, 80, 40, 255) },
     cancel: Button = .{ .label = "Cancel" },
 };
 
@@ -40,22 +41,24 @@ const Context = struct {
 
 const Logic = struct {
     pub fn route(e: anytype) void {
-        // 1. Core Update (Layout + Input)
+        // 1. Update
         const hit = zui.update(&e.sys.state, e.ctx.mouse.x, e.ctx.mouse.y, e.ctx.mouse.down);
 
-        // 2. Logic
         if (hit) |ptr| {
             if (ptr == @as(*anyopaque, @ptrCast(&e.sys.state.main.ok))) {
                 std.debug.print(">> OK Clicked!\n", .{});
             }
         }
 
-        // 3. Render
+        // 2. Render Generation
         e.ctx.gfx.clear();
         zui.render(&e.sys.state, &e.ctx.gfx);
 
-        // 4. Debug Output
-        std.debug.print("\rDraw Cmds: {d} | Mouse: {d:.0},{d:.0}  ", .{e.ctx.gfx.cmd.items.len, e.ctx.mouse.x, e.ctx.mouse.y});
+        // 3. GPU Simulation (The "Driver")
+        // In a real app, you would memcpy(gfx.vtx.items) to a GPU Buffer here.
+        const gfx = &e.ctx.gfx;
+        std.debug.print("\rFrame Data: {d} Verts | {d} Indices | {d} DrawCmds   ", 
+            .{gfx.vtx.items.len, gfx.idx.items.len, gfx.cmd.items.len});
     }
 };
 
@@ -70,20 +73,19 @@ pub fn main() !void {
 
     app.set(.layout, .{ .w=800, .h=600, .dir=.v, .pad=20 });
 
-    // Interactive Loop Simulation
     const steps = [_]struct{x: f32, y:f32, d: bool}{
-        .{ .x=50, .y=50, .d=false }, // Hover
-        .{ .x=50, .y=50, .d=true },  // Press
-        .{ .x=50, .y=50, .d=false }, // Release (Click!)
+        .{ .x=50, .y=50, .d=false },
+        .{ .x=50, .y=50, .d=true },
+        .{ .x=50, .y=50, .d=false },
     };
 
     for (steps) |s| {
-        // Simple busy loop wait
+        // Busy wait
         var i: usize = 0;
         while (i < 50_000_000) : (i += 1) { std.mem.doNotOptimizeAway(i); }
-
+        
         app.ctx.mouse = .{ .x=s.x, .y=s.y, .down=s.d };
-        app.set(.layout, app.state.layout); // Force update
+        app.set(.layout, app.state.layout); 
     }
     std.debug.print("\n", .{});
 }

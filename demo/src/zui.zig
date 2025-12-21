@@ -1,45 +1,116 @@
 const std = @import("std");
 
-// --- 1. Graphics Primitive (Backend Agnostic) ---
+// --- 1. The Low-Level Backend (ImGui Style) ---
 
-pub const Color = struct { r: u8, g: u8, b: u8, a: u8 = 255 };
+pub const Color = u32; // Packed 0xAABBGGRR
 
-pub const Primitive = union(enum) {
-    rect: struct { x: f32, y: f32, w: f32, h: f32, color: Color },
-    text: struct { x: f32, y: f32, str: []const u8, color: Color },
-    scissor: struct { x: f32, y: f32, w: f32, h: f32 },
+pub const Vertex = extern struct {
+    pos: [2]f32,
+    uv:  [2]f32,
+    col: Color,
+};
+
+pub const DrawCmd = struct {
+    elem_count: u32,       // Number of indices to draw
+    clip_rect:  [4]f32,    // Scissor rect (x, y, w, h)
+    texture_id: ?*anyopaque,
 };
 
 pub const List = struct {
-    cmd: std.ArrayListUnmanaged(Primitive) = .{},
+    vtx: std.ArrayListUnmanaged(Vertex) = .{},
+    idx: std.ArrayListUnmanaged(u16) = .{},
+    cmd: std.ArrayListUnmanaged(DrawCmd) = .{},
     alloc: std.mem.Allocator,
 
-    pub fn init(a: std.mem.Allocator) List { return .{ .alloc = a }; }
-    pub fn deinit(l: *List) void { l.cmd.deinit(l.alloc); }
-    pub fn clear(l: *List) void { l.cmd.clearRetainingCapacity(); }
+    // State
+    clip_rect: [4]f32 = .{ -10000, -10000, 20000, 20000 },
+    texture: ?*anyopaque = null,
 
-    pub fn rect(l: *List, x: f32, y: f32, w: f32, h: f32, c: Color) void {
-        l.cmd.append(l.alloc, .{ .rect = .{ .x=x, .y=y, .w=w, .h=h, .color=c } }) catch {};
+    pub fn init(a: std.mem.Allocator) List { return .{ .alloc = a }; }
+    
+    pub fn deinit(l: *List) void {
+        l.vtx.deinit(l.alloc);
+        l.idx.deinit(l.alloc);
+        l.cmd.deinit(l.alloc);
     }
-    pub fn text(l: *List, x: f32, y: f32, s: []const u8, c: Color) void {
-        l.cmd.append(l.alloc, .{ .text = .{ .x=x, .y=y, .str=s, .color=c } }) catch {};
+
+    pub fn clear(l: *List) void {
+        l.vtx.clearRetainingCapacity();
+        l.idx.clearRetainingCapacity();
+        l.cmd.clearRetainingCapacity();
+        // Start first command
+        l.cmd.append(l.alloc, .{ 
+            .elem_count = 0, 
+            .clip_rect = l.clip_rect, 
+            .texture_id = l.texture 
+        }) catch {};
+    }
+
+    // --- Primitive Generators ---
+
+    pub fn pack(r: u8, g: u8, b: u8, a: u8) Color {
+        return @as(u32, a) << 24 | @as(u32, b) << 16 | @as(u32, g) << 8 | @as(u32, r);
+    }
+
+    pub fn rect(l: *List, x: f32, y: f32, w: f32, h: f32, col: Color) void {
+        l.reserve(4, 6);
+        const a = l.vtx.items.len; // Base index
+        const white = [2]f32{0, 0}; // UV for solid color (usually center of white pixel)
+        
+        // Push 4 Vertices
+        l.pushVtx(x,     y,     white, col); // TL
+        l.pushVtx(x + w, y,     white, col); // TR
+        l.pushVtx(x + w, y + h, white, col); // BR
+        l.pushVtx(x,     y + h, white, col); // BL
+
+        // Push 2 Triangles (6 Indices)
+        l.pushIdx(@intCast(a + 0)); l.pushIdx(@intCast(a + 1)); l.pushIdx(@intCast(a + 2));
+        l.pushIdx(@intCast(a + 0)); l.pushIdx(@intCast(a + 2)); l.pushIdx(@intCast(a + 3));
+    }
+    
+    // In a real engine, this pulls UVs from a Font Atlas.
+    // Here, we just draw small rects to simulate text layout.
+    pub fn text(l: *List, x: f32, y: f32, str: []const u8, col: Color) void {
+        var cx = x;
+        for (str) |char| {
+            if (char == ' ') { cx += 4; continue; }
+            // Draw a tiny "glyph" box
+            l.rect(cx, y - 5, 5, 8, col); 
+            cx += 6;
+        }
+    }
+
+    // --- Internal Helpers ---
+
+    fn reserve(l: *List, v_count: usize, i_count: usize) void {
+        l.vtx.ensureUnusedCapacity(l.alloc, v_count) catch {};
+        l.idx.ensureUnusedCapacity(l.alloc, i_count) catch {};
+    }
+
+    fn pushVtx(l: *List, x: f32, y: f32, uv: [2]f32, c: Color) void {
+        l.vtx.appendAssumeCapacity(.{ .pos = .{x, y}, .uv = uv, .col = c });
+    }
+
+    fn pushIdx(l: *List, i: u16) void {
+        l.idx.appendAssumeCapacity(i);
+        l.cmd.items[l.cmd.items.len - 1].elem_count += 1;
     }
 };
 
-// --- 2. UI Layout & State ---
+// --- 2. UI Layout & State (Same as before) ---
 
 pub const Dir = enum(u1) { h, v };
 pub const Align = enum(u2) { start, center, end };
 
 pub const Layout = struct {
-    x: f32 = 0, y: f32 = 0, w: f32 = 0, h: f32 = 0, // Output
-    sw: f32 = 0, sh: f32 = 0,                       // Input: 0=fit, <0=grow, >0=fix
+    x: f32 = 0, y: f32 = 0, w: f32 = 0, h: f32 = 0,
+    sw: f32 = 0, sh: f32 = 0,
     dir: Dir = .h, ax: Align = .start, ay: Align = .start,
     pad: u16 = 0, gap: u16 = 0,
-    hover: bool = false, click: bool = false, pressed: bool = false, // State
+    hover: bool = false, click: bool = false, pressed: bool = false,
 };
 
-// --- 3. Reactive Router ---
+// --- 3. Reactive Router (Same as before) ---
 
 pub fn Router(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
@@ -47,18 +118,16 @@ pub fn Router(comptime State: type, comptime Logic: type, comptime Ctx: type) ty
         const Key = std.meta.FieldEnum(State);
         state: State = .{},
         ctx: Ctx,
-
         pub fn set(s: *Sys, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
             const ptr = &@field(s.state, @tagName(k));
-            const old = ptr.*;
-            if (std.meta.eql(old, v)) return;
+            if (std.meta.eql(ptr.*, v)) return;
             ptr.* = v;
-            if (@hasDecl(Logic, "route")) Logic.route(.{ .sys=s, .ctx=&s.ctx, .key=k, .old=old, .new=v });
+            if (@hasDecl(Logic, "route")) Logic.route(.{ .sys=s, .ctx=&s.ctx, .key=k });
         }
     };
 }
 
-// --- 4. Systems (The Core) ---
+// --- 4. Systems ---
 
 pub fn update(root: anytype, mx: f32, my: f32, down: bool) ?*anyopaque {
     if (!comptime hasLayout(@TypeOf(root.*))) return null;
@@ -73,16 +142,16 @@ pub fn render(root: anytype, list: *List) void {
         fn call(l: *List, node: anytype) void {
             if (@hasDecl(@TypeOf(node.*), "draw")) {
                 node.draw(l);
-            } else { 
+            } else {
                 const lay = node.layout;
                 if (@hasField(@TypeOf(node.*), "color")) l.rect(lay.x, lay.y, lay.w, lay.h, node.color);
-                if (@hasField(@TypeOf(node.*), "label")) l.text(lay.x+5, lay.y+lay.h/2, node.label, .{ .r=255, .g=255, .b=255 });
+                if (@hasField(@TypeOf(node.*), "label")) l.text(lay.x+5, lay.y+lay.h/2, node.label, List.pack(255,255,255,255));
             }
         }
     }.call);
 }
 
-// --- Internal Implementation ---
+// --- 5. Internal Implementation (Layout Logic) ---
 
 const InputCtx = struct { x: f32, y: f32, down: bool, hit: ?*anyopaque };
 
@@ -136,18 +205,12 @@ fn flex(p: *Layout, k: []Layout, ax: u1) void {
     const avail = (if (ax == 0) p.w else p.h) - pd;
     var dim: [256]f32 = undefined;
     var grow: f32 = 0;
-    
     for (k, 0..) |*c, i| {
         const sz = if (ax == 0) c.sw else c.sh;
-        if (sz < 0) { 
-            grow += -sz; dim[i] = 0; 
-        } else if (sz > 0) { 
-            dim[i] = sz; 
-        } else { 
-            dim[i] = if (ax == 0) c.w else c.h; 
-        }
+        if (sz < 0) { grow += -sz; dim[i] = 0; }
+        else if (sz > 0) { dim[i] = sz; }
+        else { dim[i] = if (ax == 0) c.w else c.h; }
     }
-    
     var used: f32 = 0;
     const is_dir = @intFromEnum(p.dir) == ax;
     for (dim[0..k.len]) |v| used = if (is_dir) used + v else @max(used, v);
@@ -160,7 +223,6 @@ fn flex(p: *Layout, k: []Layout, ax: u1) void {
             if (sz < 0) dim[i] = unit * -sz;
         }
     }
-    
     for (k, 0..) |*c, i| {
         if (ax == 0) c.w = dim[i] else c.h = dim[i];
     }
@@ -200,7 +262,6 @@ fn interact(node: anytype, ctx: *InputCtx) void {
 fn clearFlags(node: anytype) void {
     node.layout.hover = false; node.layout.pressed = false;
     inline for (std.meta.fields(@TypeOf(node.*))) |f| {
-        // FIX: check f.type (type) not the field value
         if (!std.mem.eql(u8, f.name, "layout") and comptime hasLayout(f.type)) {
             clearFlags(&@field(node, f.name));
         }
