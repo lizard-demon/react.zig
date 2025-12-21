@@ -38,9 +38,7 @@ pub const List = struct {
     }
 
     pub fn rect(l: *List, x: f32, y: f32, w: f32, h: f32, c: Color) void {
-        // FIX: Reserve memory BEFORE pushing
-        l.reserve(4, 6); 
-        
+        l.reserve(4, 6);
         const i = @as(u16, @intCast(l.vtx.items.len));
         const uv = [2]f32{0, 0};
         l.pushVtx(x, y, uv, c);
@@ -55,7 +53,7 @@ pub const List = struct {
         var cx = x;
         for (str) |char| {
             if (char == ' ') { cx += 4; continue; }
-            l.rect(cx, y-5, 5, 8, c); // rect() handles its own reservation
+            l.rect(cx, y-5, 5, 8, c);
             cx += 6;
         }
     }
@@ -64,8 +62,6 @@ pub const List = struct {
         return @as(u32, a)<<24 | @as(u32, b)<<16 | @as(u32, g)<<8 | @as(u32, r);
     }
     
-    // --- Internal Helpers ---
-
     fn reserve(l: *List, v_count: usize, i_count: usize) void {
         l.vtx.ensureUnusedCapacity(l.alloc, v_count) catch {};
         l.idx.ensureUnusedCapacity(l.alloc, i_count) catch {};
@@ -100,9 +96,14 @@ pub fn Router(comptime State: type, comptime Logic: type, comptime Ctx: type) ty
         ctx: Ctx,
         pub fn emit(s: *Sys, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
             const ptr = &@field(s.state, @tagName(k));
-            if (std.meta.eql(ptr.*, v)) return;
-            ptr.* = v;
-            if (@hasDecl(Logic, "route")) Logic.route(.{ .sys=s, .ctx=&s.ctx, .key=k });
+            const old = ptr.*; // Capture OLD value
+            if (std.meta.eql(old, v)) return;
+            ptr.* = v;         // Update NEW value
+            
+            // FIX: Pass .old and .new to the Logic handler
+            if (@hasDecl(Logic, "route")) Logic.route(.{ 
+                .sys=s, .ctx=&s.ctx, .key=k, .old=old, .new=v 
+            });
         }
     };
 }
