@@ -1,7 +1,7 @@
 const std = @import("std");
 const zui = @import("zui.zig");
 
-// --- 1. Generic Widgets ---
+// --- Widgets ---
 
 pub fn Button(comptime ActionEnum: type) type {
     return struct {
@@ -25,20 +25,17 @@ pub fn Button(comptime ActionEnum: type) type {
     };
 }
 
-// --- 2. State Definition ---
+// --- App ---
 
 const Actions = enum { None, Click };
 const MyBtn = Button(Actions); 
 
-const AppState = struct {
+const AppData = struct {
     layout: zui.Layout = .{ .w=600, .h=400, .pad=20, .gap=20 },
-    
-    // Logic State
     action: Actions = .None,
     stage_a: i32 = 0,
     stage_b: i32 = 0,
     stage_c: i32 = 0,
-
     main: struct {
         layout: zui.Layout = .{ .sw=-1, .sh=-1, .pad=10, .gap=10 },
         trigger: MyBtn = .{ .label = "TRIGGER CHAIN", .action = .Click },
@@ -50,43 +47,36 @@ const Context = struct {
     input: zui.Input = .{},
 };
 
-// --- 3. Logic (The Reactor) ---
-
 const Logic = struct {
-    // Comptime key allows us to perform tree-shaking on logic branches
-    pub fn react(proxy: anytype, comptime key: anytype) void {
-        switch (key) {
+    pub fn react(flow: anytype, comptime field: anytype) void {
+        switch (field) {
             .action => {
-                if (proxy.get(.action) == .Click) {
+                if (flow.data.action == .Click) {
                     std.debug.print("1. [Action] Triggered.\n", .{});
-                    proxy.emit(.stage_a, 1);
+                    flow.emit(.stage_a, 1);
                 }
             },
             .stage_a => {
-                std.debug.print("2. [Chain] Stage A active. Emitting B...\n", .{});
-                proxy.emit(.stage_b, 1);
+                std.debug.print("2. [Flow] Stage A active. Emitting B...\n", .{});
+                flow.emit(.stage_b, 1);
             },
             .stage_b => {
-                std.debug.print("3. [Chain] Stage B active. Emitting C...\n", .{});
-                proxy.emit(.stage_c, 1);
+                std.debug.print("3. [Flow] Stage B active. Emitting C...\n", .{});
+                flow.emit(.stage_c, 1);
             },
             .stage_c => {
-                std.debug.print("4. [Chain] Stage C active. Chain Complete.\n", .{});
-                // Uncomment to test safety:
-                // proxy.emit(.stage_a, 2); 
+                std.debug.print("4. [Flow] Stage C active. Chain Complete.\n", .{});
             },
             else => {},
         }
     }
 };
 
-// --- 4. Main Loop ---
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     
-    var app = zui.Store(AppState, Logic, Context){ .ctx = .{ .gfx = zui.List.init(gpa.allocator()) } };
+    var app = zui.Store(AppData, Logic, Context){ .ctx = .{ .gfx = zui.List.init(gpa.allocator()) } };
     defer app.ctx.gfx.deinit();
 
     app.emit(.layout, .{ .w=600, .h=400, .dir=.v, .pad=20 });
@@ -110,11 +100,11 @@ pub fn main() !void {
         }
 
         if (app.dirty) {
-            zui.solve(&app.state);
+            zui.solve(&app.data);
             app.handle(); 
             
             app.ctx.gfx.clear();
-            zui.render(&app.state, &app.ctx.gfx);
+            zui.render(&app.data, &app.ctx.gfx);
             app.dirty = false;
             
             std.debug.print("Rendered Frame {d} (Vtx: {d})\n", .{frame, app.ctx.gfx.vtx.items.len});

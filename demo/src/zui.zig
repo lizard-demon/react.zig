@@ -1,6 +1,6 @@
 const std = @import("std");
 
-// --- 1. Graphics Backend ---
+// --- 1. Graphics ---
 
 pub const Color = u32;
 pub const Vertex = extern struct { pos: [2]f32, uv: [2]f32, col: Color };
@@ -61,7 +61,7 @@ pub const List = struct {
     }
 };
 
-// --- 2. Input & Layout Primitives ---
+// --- 2. State & Layout ---
 
 pub const Input = struct {
     x: f32 = 0, y: f32 = 0, down: bool = false,
@@ -75,51 +75,49 @@ pub const Layout = struct {
     hover: bool = false, pressed: bool = false,
 };
 
-// --- 3. Recursive DAG Store ---
+// --- 3. The Store ---
 
-pub fn Store(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
+pub fn Store(comptime Data: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
         const Self = @This();
-        const Key = std.meta.FieldEnum(State);
-        state: State = .{},
+        const Field = std.meta.FieldEnum(Data);
+        
+        data: Data = .{},
         ctx: Ctx,
         dirty: bool = true,
 
-        pub fn get(s: *Self, comptime k: Key) std.meta.fieldInfo(State, k).type {
-            return @field(s.state, @tagName(k));
+        pub fn emit(s: *Self, comptime f: Field, v: std.meta.fieldInfo(Data, f).type) void {
+            s.update(f, v, .{});
         }
 
-        pub fn emit(s: *Self, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
-            s.update(k, v, .{});
-        }
-
-        fn update(s: *Self, comptime k: Key, v: anytype, comptime path: anytype) void {
-            const ptr = &@field(s.state, @tagName(k));
+        fn update(s: *Self, comptime f: Field, v: anytype, comptime path: anytype) void {
+            const ptr = &@field(s.data, @tagName(f));
             if (std.meta.eql(ptr.*, v)) return;
             
             ptr.* = v;
-            s.dirty = true; // Data changed -> Needs render
+            s.dirty = true;
 
             if (@hasDecl(Logic, "react")) {
-                const Proxy = struct {
-                    parent: *Self,
-                    pub fn get(p: @This(), comptime k2: Key) std.meta.fieldInfo(State, k2).type {
-                        return p.parent.get(k2);
-                    }
-                    pub fn emit(p: @This(), comptime k2: Key, v2: std.meta.fieldInfo(State, k2).type) void {
+                // FIXED: Removed invalid 'pub' modifiers from fields.
+                // The '_store' convention and *const Data type enforce safety.
+                const Flow = struct {
+                    _store: *Self,
+                    data: *const Data,
+                    ctx: *Ctx,
+                    
+                    pub fn emit(self: @This(), comptime f2: Field, v2: std.meta.fieldInfo(Data, f2).type) void {
                         inline for (path) |prev| {
-                            if (k2 == prev) @compileError("Circular Dependency: " ++ @tagName(k2));
+                            if (f2 == prev) @compileError("Circular Dependency: " ++ @tagName(f2));
                         }
-                        p.parent.update(k2, v2, path ++ .{k2});
+                        self._store.update(f2, v2, path ++ .{f});
                     }
                 };
-                // Lazy-comptime instantiation of the reaction chain
-                Logic.react(Proxy{ .parent = s }, k);
+                Logic.react(Flow{ ._store=s, .data=&s.data, .ctx=&s.ctx }, f);
             }
         }
 
         pub fn handle(s: *Self) void {
-            handleTree(&s.state, s, &s.ctx);
+            handleTree(&s.data, s, &s.ctx);
         }
     };
 }
@@ -195,7 +193,7 @@ pub fn handleTree(root: anytype, sys: anytype, ctx: anytype) void {
     if (old_h != new_h or old_p != new_p) {
         l.hover = new_h;
         l.pressed = new_p;
-        sys.dirty = true; // Visual state changed -> Needs render
+        sys.dirty = true;
     }
 }
 
