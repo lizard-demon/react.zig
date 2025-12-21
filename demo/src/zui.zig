@@ -1,6 +1,6 @@
 const std = @import("std");
 
-// --- 1. Graphics Primitives ---
+// --- 1. Graphics Backend ---
 
 pub const Color = u32;
 pub const Vertex = extern struct { pos: [2]f32, uv: [2]f32, col: Color };
@@ -16,7 +16,7 @@ pub const List = struct {
 
     pub fn init(a: std.mem.Allocator) List { return .{ .alloc = a }; }
     pub fn deinit(l: *List) void { l.vtx.deinit(l.alloc); l.idx.deinit(l.alloc); l.cmd.deinit(l.alloc); }
-
+    
     pub fn clear(l: *List) void {
         l.vtx.clearRetainingCapacity(); l.idx.clearRetainingCapacity(); l.cmd.clearRetainingCapacity();
         l.cmd.append(l.alloc, .{ .elem_count=0, .clip_rect=l.clip, .texture_id=l.tex }) catch {};
@@ -61,7 +61,7 @@ pub const List = struct {
     }
 };
 
-// --- 2. State & Layout ---
+// --- 2. Input & Layout Primitives ---
 
 pub const Input = struct {
     x: f32 = 0, y: f32 = 0, down: bool = false,
@@ -75,23 +75,51 @@ pub const Layout = struct {
     hover: bool = false, pressed: bool = false,
 };
 
-// --- 3. The Store (Pure Data) ---
+// --- 3. Recursive DAG Store ---
 
 pub fn Store(comptime State: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
-        const Sys = @This();
+        const Self = @This();
         const Key = std.meta.FieldEnum(State);
         state: State = .{},
         ctx: Ctx,
-        
-        pub fn emit(s: *Sys, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
+        dirty: bool = true,
+
+        pub fn get(s: *Self, comptime k: Key) std.meta.fieldInfo(State, k).type {
+            return @field(s.state, @tagName(k));
+        }
+
+        pub fn emit(s: *Self, comptime k: Key, v: std.meta.fieldInfo(State, k).type) void {
+            s.update(k, v, .{});
+        }
+
+        fn update(s: *Self, comptime k: Key, v: anytype, comptime path: anytype) void {
             const ptr = &@field(s.state, @tagName(k));
-            const old = ptr.*;
-            if (std.meta.eql(old, v)) return;
-            ptr.* = v;
+            if (std.meta.eql(ptr.*, v)) return;
             
-            // Dispatch to Logic. It is logic's job to set ctx.dirty = true
-            if (@hasDecl(Logic, "react")) Logic.react(.{ .sys=s, .ctx=&s.ctx, .key=k, .old=old, .new=v });
+            ptr.* = v;
+            s.dirty = true; // Data changed -> Needs render
+
+            if (@hasDecl(Logic, "react")) {
+                const Proxy = struct {
+                    parent: *Self,
+                    pub fn get(p: @This(), comptime k2: Key) std.meta.fieldInfo(State, k2).type {
+                        return p.parent.get(k2);
+                    }
+                    pub fn emit(p: @This(), comptime k2: Key, v2: std.meta.fieldInfo(State, k2).type) void {
+                        inline for (path) |prev| {
+                            if (k2 == prev) @compileError("Circular Dependency: " ++ @tagName(k2));
+                        }
+                        p.parent.update(k2, v2, path ++ .{k2});
+                    }
+                };
+                // Lazy-comptime instantiation of the reaction chain
+                Logic.react(Proxy{ .parent = s }, k);
+            }
+        }
+
+        pub fn handle(s: *Self) void {
+            handleTree(&s.state, s, &s.ctx);
         }
     };
 }
@@ -129,7 +157,7 @@ pub fn solve(root: anytype) void {
     }
 }
 
-pub fn handle(root: anytype, sys: anytype, ctx: anytype) void {
+pub fn handleTree(root: anytype, sys: anytype, ctx: anytype) void {
     if (!comptime hasLayout(@TypeOf(root.*))) return;
     const l = &root.layout;
     const old_h = l.hover;
@@ -145,9 +173,9 @@ pub fn handle(root: anytype, sys: anytype, ctx: anytype) void {
             const child = &@field(root, f.name);
             if (comptime hasLayout(@TypeOf(child.*))) {
                 if (!captured) {
-                    handle(child, sys, ctx);
+                    handleTree(child, sys, ctx);
                     if (child.layout.hover or child.layout.pressed) captured = true;
-                } else clearFlags(child, ctx);
+                } else clearFlags(child, sys);
             }
         }
     }
@@ -164,11 +192,10 @@ pub fn handle(root: anytype, sys: anytype, ctx: anytype) void {
         }
     }
 
-    // Interaction Change -> Set Dirty Flag in Context
     if (old_h != new_h or old_p != new_p) {
         l.hover = new_h;
         l.pressed = new_p;
-        ctx.dirty = true;
+        sys.dirty = true; // Visual state changed -> Needs render
     }
 }
 
@@ -203,15 +230,15 @@ fn visit(root: anytype, ctx: anytype, func: anytype) void {
     }
 }
 
-fn clearFlags(node: anytype, ctx: anytype) void {
+fn clearFlags(node: anytype, sys: anytype) void {
     if (node.layout.hover or node.layout.pressed) {
         node.layout.hover = false; 
         node.layout.pressed = false;
-        ctx.dirty = true;
+        sys.dirty = true;
     }
     inline for (std.meta.fields(@TypeOf(node.*))) |f| {
         if (!std.mem.eql(u8, f.name, "layout") and comptime hasLayout(f.type)) {
-            clearFlags(&@field(node, f.name), ctx);
+            clearFlags(&@field(node, f.name), sys);
         }
     }
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
 const zui = @import("zui.zig");
 
-// --- Widgets ---
+// --- 1. Generic Widgets ---
 
 pub fn Button(comptime ActionEnum: type) type {
     return struct {
@@ -25,47 +25,62 @@ pub fn Button(comptime ActionEnum: type) type {
     };
 }
 
-// --- App ---
+// --- 2. State Definition ---
 
-const Actions = enum { None, Inc, Dec };
+const Actions = enum { None, Click };
 const MyBtn = Button(Actions); 
 
 const AppState = struct {
     layout: zui.Layout = .{ .w=600, .h=400, .pad=20, .gap=20 },
-    value: i32 = 0,
-    action: Actions = .None, 
+    
+    // Logic State
+    action: Actions = .None,
+    stage_a: i32 = 0,
+    stage_b: i32 = 0,
+    stage_c: i32 = 0,
+
     main: struct {
         layout: zui.Layout = .{ .sw=-1, .sh=-1, .pad=10, .gap=10 },
-        inc: MyBtn = .{ .label = "Increment", .action = .Inc },
-        dec: MyBtn = .{ .label = "Decrement", .action = .Dec, .color = zui.List.pack(70, 40, 40, 255) },
+        trigger: MyBtn = .{ .label = "TRIGGER CHAIN", .action = .Click },
     } = .{},
 };
 
 const Context = struct {
     gfx: zui.List,
     input: zui.Input = .{},
-    dirty: bool = true, // Start dirty
-    render_count: usize = 0,
 };
 
+// --- 3. Logic (The Reactor) ---
+
 const Logic = struct {
-    pub fn react(e: anytype) void {
-        if (e.key == .action) {
-            switch (e.new) {
-                // Changing data does not automatically redraw.
-                // We will dirty the context when we actually update the visual label.
-                .Inc => e.sys.emit(.value, e.sys.state.value + 1),
-                .Dec => e.sys.emit(.value, e.sys.state.value - 1),
-                .None => {},
-            }
-        }
-        if (e.key == .value) {
-            std.debug.print("  [Logic] Value changed to {d}\n", .{e.new});
-            // HERE we decide this change is visual, so we flag dirty.
-            e.ctx.dirty = true;
+    // Comptime key allows us to perform tree-shaking on logic branches
+    pub fn react(proxy: anytype, comptime key: anytype) void {
+        switch (key) {
+            .action => {
+                if (proxy.get(.action) == .Click) {
+                    std.debug.print("1. [Action] Triggered.\n", .{});
+                    proxy.emit(.stage_a, 1);
+                }
+            },
+            .stage_a => {
+                std.debug.print("2. [Chain] Stage A active. Emitting B...\n", .{});
+                proxy.emit(.stage_b, 1);
+            },
+            .stage_b => {
+                std.debug.print("3. [Chain] Stage B active. Emitting C...\n", .{});
+                proxy.emit(.stage_c, 1);
+            },
+            .stage_c => {
+                std.debug.print("4. [Chain] Stage C active. Chain Complete.\n", .{});
+                // Uncomment to test safety:
+                // proxy.emit(.stage_a, 2); 
+            },
+            else => {},
         }
     }
 };
+
+// --- 4. Main Loop ---
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -77,47 +92,35 @@ pub fn main() !void {
     app.emit(.layout, .{ .w=600, .h=400, .dir=.v, .pad=20 });
 
     const input_log = [_]struct{x: f32, y:f32, d: bool}{
-        .{ .x=40, .y=40, .d=false }, // Hover
-        .{ .x=40, .y=40, .d=true },  // Press
-        .{ .x=40, .y=40, .d=false }, // Click (Trigger Value)
-        .{ .x=200, .y=200, .d=false}, // Move Away
+        .{ .x=40, .y=40, .d=false },
+        .{ .x=40, .y=40, .d=true },  
+        .{ .x=40, .y=40, .d=false }, 
     };
 
-    std.debug.print("\n--- Explicit Dirty Control Demo ---\n", .{});
+    std.debug.print("\n--- Recursive DAG Demo ---\n", .{});
     
     var frame: usize = 0;
-    var log_idx: usize = 0;
+    var idx: usize = 0;
 
-    while (frame < 60) : (frame += 1) {
-        // 1. Update Input
-        if (frame % 15 == 0 and log_idx < input_log.len) {
-            const in = input_log[log_idx];
+    while (frame < 20) : (frame += 1) {
+        if (frame % 5 == 0 and idx < input_log.len) {
+            const in = input_log[idx];
             app.ctx.input = .{ .x=in.x, .y=in.y, .down=in.d, .active=app.ctx.input.down };
-            log_idx += 1;
+            idx += 1;
         }
 
-        // 2. Run Engine Pipeline (User Controlled)
-        // Solve Layout
-        if (app.ctx.dirty) zui.solve(&app.state);
-        // Handle Interactions (Will set ctx.dirty if visuals change)
-        zui.handle(&app.state, &app, &app.ctx);
-
-        // 3. Conditional Render
-        if (app.ctx.dirty) {
-            app.ctx.render_count += 1;
+        if (app.dirty) {
+            zui.solve(&app.state);
+            app.handle(); 
+            
             app.ctx.gfx.clear();
             zui.render(&app.state, &app.ctx.gfx);
-            app.ctx.gfx.cursor(app.ctx.input.x, app.ctx.input.y, 0xFFFF00FF);
+            app.dirty = false;
             
-            // Reset Flag
-            app.ctx.dirty = false;
+            std.debug.print("Rendered Frame {d} (Vtx: {d})\n", .{frame, app.ctx.gfx.vtx.items.len});
         }
-
-        const g = &app.ctx.gfx;
-        std.debug.print("\rFrame:{d} | Renders:{d} | Vtx:{d} | Val:{d}   ", 
-            .{frame, app.ctx.render_count, g.vtx.items.len, app.state.value});
-
-        var i: usize = 0; while(i<5_000_000):(i+=1){std.mem.doNotOptimizeAway(i);}
+        
+        var i: usize = 0; while(i<10_000_000):(i+=1){std.mem.doNotOptimizeAway(i);}
     }
     std.debug.print("\n", .{});
 }
