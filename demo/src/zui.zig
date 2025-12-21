@@ -1,7 +1,7 @@
 const std = @import("std");
 
 // --- 1. Graphics ---
-
+// (Standard Vertex/List code... condensed for brevity, same as before)
 pub const Color = u32;
 pub const Vertex = extern struct { pos: [2]f32, uv: [2]f32, col: Color };
 pub const DrawCmd = struct { elem_count: u32, clip_rect: [4]f32, texture_id: ?*anyopaque };
@@ -21,7 +21,7 @@ pub const List = struct {
         l.vtx.clearRetainingCapacity(); l.idx.clearRetainingCapacity(); l.cmd.clearRetainingCapacity();
         l.cmd.append(l.alloc, .{ .elem_count=0, .clip_rect=l.clip, .texture_id=l.tex }) catch {};
     }
-
+    // ... (rect, text, cursor, pack, reserve, pushVtx, pushIdx same as previous) ...
     pub fn rect(l: *List, x: f32, y: f32, w: f32, h: f32, c: Color) void {
         l.reserve(4, 6);
         const i = @as(u16, @intCast(l.vtx.items.len));
@@ -29,26 +29,17 @@ pub const List = struct {
         l.pushVtx(x+w, y+h, 0, 0, c); l.pushVtx(x, y+h, 0, 0, c);
         l.pushIdx(i); l.pushIdx(i+1); l.pushIdx(i+2); l.pushIdx(i); l.pushIdx(i+2); l.pushIdx(i+3);
     }
-
     pub fn text(l: *List, x: f32, y: f32, str: []const u8, c: Color) void {
-        var cx = x;
-        for (str) |char| {
-            if (char == ' ') { cx += 4; continue; }
-            l.rect(cx, y-5, 5, 8, c); cx += 6;
-        }
+        var cx = x; for (str) |char| { if (char == ' ') { cx += 4; continue; } l.rect(cx, y-5, 5, 8, c); cx += 6; }
     }
-
     pub fn cursor(l: *List, x: f32, y: f32, c: Color) void {
-        l.reserve(3, 3);
-        const i = @as(u16, @intCast(l.vtx.items.len));
+        l.reserve(3, 3); const i = @as(u16, @intCast(l.vtx.items.len));
         l.pushVtx(x, y, 0, 0, c); l.pushVtx(x, y+15, 0, 0, c); l.pushVtx(x+10, y+10, 0, 0, c);
         l.pushIdx(i); l.pushIdx(i+1); l.pushIdx(i+2);
     }
-
     pub fn pack(r: u8, g: u8, b: u8, a: u8) Color {
         return @as(u32, a)<<24 | @as(u32, b)<<16 | @as(u32, g)<<8 | @as(u32, r);
     }
-
     fn reserve(l: *List, v: usize, i: usize) void {
         l.vtx.ensureUnusedCapacity(l.alloc, v) catch {}; l.idx.ensureUnusedCapacity(l.alloc, i) catch {};
     }
@@ -61,12 +52,9 @@ pub const List = struct {
     }
 };
 
-// --- 2. State & Layout ---
+// --- 2. State & Layout Definitions ---
 
-pub const Input = struct {
-    x: f32 = 0, y: f32 = 0, down: bool = false,
-    active: bool = false,
-};
+pub const Input = struct { x: f32 = 0, y: f32 = 0, down: bool = false, active: bool = false };
 
 pub const Layout = struct {
     x: f32 = 0, y: f32 = 0, w: f32 = 0, h: f32 = 0,
@@ -75,7 +63,7 @@ pub const Layout = struct {
     hover: bool = false, pressed: bool = false,
 };
 
-// --- 3. The Store ---
+// --- 3. The Generic Store (Pure DAG Engine) ---
 
 pub fn Store(comptime Data: type, comptime Logic: type, comptime Ctx: type) type {
     return struct {
@@ -86,10 +74,12 @@ pub fn Store(comptime Data: type, comptime Logic: type, comptime Ctx: type) type
         ctx: Ctx,
         dirty: bool = true,
 
+        // Entry Point
         pub fn emit(s: *Self, comptime f: Field, v: std.meta.fieldInfo(Data, f).type) void {
             s.update(f, v, .{});
         }
 
+        // Recursive Update Chain
         fn update(s: *Self, comptime f: Field, v: anytype, comptime path: anytype) void {
             const ptr = &@field(s.data, @tagName(f));
             if (std.meta.eql(ptr.*, v)) return;
@@ -98,31 +88,23 @@ pub fn Store(comptime Data: type, comptime Logic: type, comptime Ctx: type) type
             s.dirty = true;
 
             if (@hasDecl(Logic, "react")) {
-                // FIXED: Removed invalid 'pub' modifiers from fields.
-                // The '_store' convention and *const Data type enforce safety.
                 const Flow = struct {
                     _store: *Self,
-                    data: *const Data,
+                    data: *const Data, // Read-Only
                     ctx: *Ctx,
                     
                     pub fn emit(self: @This(), comptime f2: Field, v2: std.meta.fieldInfo(Data, f2).type) void {
-                        inline for (path) |prev| {
-                            if (f2 == prev) @compileError("Circular Dependency: " ++ @tagName(f2));
-                        }
+                        inline for (path) |prev| { if (f2 == prev) @compileError("Circular Dependency: " ++ @tagName(f2)); }
                         self._store.update(f2, v2, path ++ .{f});
                     }
                 };
                 Logic.react(Flow{ ._store=s, .data=&s.data, .ctx=&s.ctx }, f);
             }
         }
-
-        pub fn handle(s: *Self) void {
-            handleTree(&s.data, s, &s.ctx);
-        }
     };
 }
 
-// --- 4. Systems ---
+// --- 4. Standalone UI Systems ---
 
 pub fn solve(root: anytype) void {
     if (!comptime hasLayout(@TypeOf(root.*))) return;
@@ -155,7 +137,7 @@ pub fn solve(root: anytype) void {
     }
 }
 
-pub fn handleTree(root: anytype, sys: anytype, ctx: anytype) void {
+pub fn handle(root: anytype, store: anytype, ctx: anytype) void {
     if (!comptime hasLayout(@TypeOf(root.*))) return;
     const l = &root.layout;
     const old_h = l.hover;
@@ -171,9 +153,9 @@ pub fn handleTree(root: anytype, sys: anytype, ctx: anytype) void {
             const child = &@field(root, f.name);
             if (comptime hasLayout(@TypeOf(child.*))) {
                 if (!captured) {
-                    handleTree(child, sys, ctx);
+                    handle(child, store, ctx);
                     if (child.layout.hover or child.layout.pressed) captured = true;
-                } else clearFlags(child, sys);
+                } else clearFlags(child, store);
             }
         }
     }
@@ -186,14 +168,14 @@ pub fn handleTree(root: anytype, sys: anytype, ctx: anytype) void {
         if (ctx.input.down) {
             new_p = true;
         } else if (old_p) {
-            if (@hasDecl(@TypeOf(root.*), "onClick")) root.onClick(.{ .sys = sys });
+            if (@hasDecl(@TypeOf(root.*), "onClick")) root.onClick(.{ .sys = store });
         }
     }
 
     if (old_h != new_h or old_p != new_p) {
         l.hover = new_h;
         l.pressed = new_p;
-        sys.dirty = true;
+        store.dirty = true;
     }
 }
 
@@ -211,12 +193,10 @@ pub fn render(root: anytype, list: *List) void {
     }.call);
 }
 
-// --- Helpers ---
-
+// --- Internal Helpers ---
 fn hasLayout(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasField(T, "layout") and @TypeOf(@field(@as(T, undefined), "layout")) == Layout;
 }
-
 fn visit(root: anytype, ctx: anytype, func: anytype) void {
     const T = @TypeOf(root.*);
     if (comptime hasLayout(T)) func(ctx, root);
@@ -227,20 +207,12 @@ fn visit(root: anytype, ctx: anytype, func: anytype) void {
         }
     }
 }
-
-fn clearFlags(node: anytype, sys: anytype) void {
-    if (node.layout.hover or node.layout.pressed) {
-        node.layout.hover = false; 
-        node.layout.pressed = false;
-        sys.dirty = true;
-    }
+fn clearFlags(node: anytype, store: anytype) void {
+    if (node.layout.hover or node.layout.pressed) { node.layout.hover = false; node.layout.pressed = false; store.dirty = true; }
     inline for (std.meta.fields(@TypeOf(node.*))) |f| {
-        if (!std.mem.eql(u8, f.name, "layout") and comptime hasLayout(f.type)) {
-            clearFlags(&@field(node, f.name), sys);
-        }
+        if (!std.mem.eql(u8, f.name, "layout") and comptime hasLayout(f.type)) clearFlags(&@field(node, f.name), store);
     }
 }
-
 fn flex(p: *Layout, k: []Layout, ax: u1) void {
     const pd = @as(f32, @floatFromInt(p.pad * 2));
     const avail = (if (ax == 0) p.w else p.h) - pd;
