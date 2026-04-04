@@ -1,110 +1,95 @@
 const std = @import("std");
-const zui = @import("zui.zig");
+const Signals = @import("react").Signals;
 
-// --- Widgets ---
+const Dashboard = Signals(struct {
+    pub const State = struct {
+        // --- Input Sources ---
+        user_name: []const u8 = "Guest",
+        price: f32 = 0.0,
+        quantity: u32 = 0,
+        tax_rate: f32 = 0.08, // 8%
+        discount_rate: f32 = 0.10, // 10%
 
-pub fn Button(comptime ActionEnum: type) type {
-    return struct {
-        layout: zui.Layout = .{ .w = 120, .sh = -1 },
-        label: []const u8 = "Btn",
-        color: zui.Color = zui.List.pack(60, 60, 70, 255),
-        action: ?ActionEnum = null, 
-        
-        // Interaction: Emits via sys.emit
-        pub fn onClick(self: *const @This(), ctx: anytype) void {
-            if (self.action) |act| ctx.sys.emit(.action, act); 
-        }
-
-        // Render: Draws to vertex list
-        pub fn draw(self: *const @This(), list: *zui.List) void {
-            var c = self.color;
-            if (self.layout.pressed) c = zui.List.pack(200, 200, 200, 255)
-            else if (self.layout.hover) c = c + 0x202020;
-            const l = self.layout;
-            list.rect(l.x, l.y, l.w, l.h, c);
-            list.text(l.x+15, l.y+(l.h/2)-4, self.label, 0xFFFFFFFF);
-        }
+        // --- Derived Signals ---
+        subtotal: f32 = 0.0,
+        discount_amt: f32 = 0.0,
+        total: f32 = 0.0,
+        is_high_value: bool = false,
+        summary_text: []const u8 = "",
     };
-}
 
-// --- App ---
+    pub const rules = .{
+        .subtotal      = .{ .price, .quantity },
+        .discount_amt  = .{ .subtotal, .discount_rate },
+        .total         = .{ .subtotal, .discount_amt, .tax_rate },
+        .is_high_value = .{ .total },
+        .summary_text  = .{ .user_name, .total },
+    };
 
-const Actions = enum { None, Click };
-const MyBtn = Button(Actions); 
-
-const AppData = struct {
-    layout: zui.Layout = .{ .w=600, .h=400, .pad=20, .gap=20 },
-    action: Actions = .None,
-    val: i32 = 0,
-    main: struct {
-        layout: zui.Layout = .{ .sw=-1, .sh=-1, .pad=10, .gap=10 },
-        trigger: MyBtn = .{ .label = "CLICK ME", .action = .Click },
-    } = .{},
-};
-
-const Context = struct {
-    gfx: zui.List,
-    input: zui.Input = .{},
-};
-
-const Logic = struct {
-    pub fn react(flow: anytype, comptime field: anytype) void {
-        switch (field) {
-            .action => {
-                // Read from flow.data (safe), write via flow.emit (safe)
-                if (flow.data.action == .Click) {
-                    flow.emit(.val, flow.data.val + 1);
-                }
+    pub fn update(state: *State, comptime f: std.meta.FieldEnum(State)) void {
+        switch (f) {
+            .subtotal => state.subtotal = state.price * @as(f32, @floatFromInt(state.quantity)),
+            .discount_amt => state.discount_amt = state.subtotal * state.discount_rate,
+            .total => {
+                const after_discount = state.subtotal - state.discount_amt;
+                state.total = after_discount * (1.0 + state.tax_rate);
             },
-            .val => {
-                std.debug.print("Value updated to: {d}\n", .{flow.data.val});
+            .is_high_value => state.is_high_value = (state.total > 500.0),
+            .summary_text => {
+                // In a real UI, this would use an allocator; here we use a static buffer for the demo
+                state.summary_text = if (state.total > 0) "Order Ready" else "Cart Empty";
             },
             else => {},
         }
     }
-};
+});
+
+// --- UI Components ---
+
+fn renderHeader(app: *const Dashboard) void {
+    std.debug.print("\n=== [ {s}'s Dashboard ] ===\n", .{app.get(.user_name)});
+}
+
+fn renderOrderDetails(app: *const Dashboard) void {
+    std.debug.print("Price: ${d:.2} | Qty: {d} | Subtotal: ${d:.2}\n", .{
+        app.get(.price), app.get(.quantity), app.get(.subtotal),
+    });
+}
+
+fn renderTotal(app: *const Dashboard) void {
+    const color = if (app.get(.is_high_value)) "\x1b[32;1m" else "\x1b[0m"; // Green if high value
+    std.debug.print("Final Total: {s}${d:.2}\x1b[0m ({s})\n", .{
+        color, app.get(.total), app.get(.summary_text),
+    });
+}
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    var app: Dashboard = .{};
     
-    // Store is purely data + logic. It doesn't know about UI systems.
-    var app = zui.Store(AppData, Logic, Context){ .ctx = .{ .gfx = zui.List.init(gpa.allocator()) } };
-    defer app.ctx.gfx.deinit();
-
-    app.emit(.layout, .{ .w=600, .h=400, .dir=.v, .pad=20 });
-
-    const input_log = [_]struct{x: f32, y:f32, d: bool}{
-        .{ .x=40, .y=40, .d=false },
-        .{ .x=40, .y=40, .d=true },  
-        .{ .x=40, .y=40, .d=false }, 
+    // Component Watch Masks (Comptime resolved)
+    const masks = .{
+        .header = comptime Dashboard.watch(&.{.user_name}),
+        .order  = comptime Dashboard.watch(&.{.subtotal}),
+        .total  = comptime Dashboard.watch(&.{.total, .summary_text}),
     };
 
-    std.debug.print("\n--- Decoupled DAG Demo ---\n", .{});
+    // Initial Render
+    renderHeader(&app);
+    renderOrderDetails(&app);
+    renderTotal(&app);
+
+    // Simulated User Interaction: User changes name and quantity
+    std.debug.print("\n> User updates name and adds items...\n", .{});
     
-    var frame: usize = 0;
-    var idx: usize = 0;
+    app.set(.user_name, "Lizard");
+    app.set(.price, 125.0);
+    app.set(.quantity, 5);
+    
+    // The "Engine" Moment: Single flush propagates everything
+    const dirty = app.flush();
 
-    while (frame < 20) : (frame += 1) {
-        if (frame % 5 == 0 and idx < input_log.len) {
-            const in = input_log[idx];
-            app.ctx.input = .{ .x=in.x, .y=in.y, .down=in.d, .active=app.ctx.input.down };
-            idx += 1;
-        }
-
-        if (app.dirty) {
-            // Manual Pipeline Composition
-            zui.solve(&app.data);                     
-            zui.handle(&app.data, &app, &app.ctx);    
-            
-            app.ctx.gfx.clear();
-            zui.render(&app.data, &app.ctx.gfx);
-            app.dirty = false;
-            
-            std.debug.print("Frame {d}: Rendered {d} Verts\n", .{frame, app.ctx.gfx.vtx.items.len});
-        }
-        
-        var i: usize = 0; while(i<10_000_000):(i+=1){std.mem.doNotOptimizeAway(i);}
-    }
-    std.debug.print("\n", .{});
+    // Fine-grained Effect Dispatch: Only re-render what actually changed
+    if (dirty & masks.header != 0) renderHeader(&app);
+    if (dirty & masks.order != 0)  renderOrderDetails(&app);
+    if (dirty & masks.total != 0)  renderTotal(&app);
 }
