@@ -1,26 +1,26 @@
 const std = @import("std");
 
-inline fn bit(comptime M: type, comptime i: usize) M {
-    return @as(M, 1) << @intCast(i);
+inline fn bit(comptime mask: type, comptime shift: usize) mask {
+    return @as(mask, 1) << @intCast(shift);
 }
 
-pub fn Signals(comptime Spec: type) type {
-    const FullState = comptime blk: {
-        const src     = std.meta.fields(Spec.State);
-        const derived = std.meta.declarations(Spec.compute);
-        var fields: [src.len + derived.len]std.builtin.Type.StructField = undefined;
-        for (src, 0..) |f, i| fields[i] = f;
-        for (derived, 0..) |decl, i| {
-            const fn_val = @field(Spec.compute, decl.name);
-            const Ret    = @typeInfo(@TypeOf(fn_val)).@"fn".return_type orelse
-                @compileError("compute." ++ decl.name ++ " must have an explicit return type");
-            var zero: Ret = std.mem.zeroes(Ret);
-            fields[src.len + i] = .{
+pub fn Signals(comptime spec: type) type {
+    const State = comptime blk: {
+        const source = std.meta.fields(spec.State);
+        const derive = std.meta.declarations(spec.compute);
+        var fields: [source.len + derive.len]std.builtin.Type.StructField = undefined;
+        for (source, 0..) |field, index| fields[index] = field;
+        for (derive, 0..) |decl, index| {
+            const func   = @field(spec.compute, decl.name);
+            const result = @typeInfo(@TypeOf(func)).@"fn".return_type orelse
+                @compileError("missing return type");
+            var zero: result = std.mem.zeroes(result);
+            fields[source.len + index] = .{
                 .name              = decl.name,
-                .type              = Ret,
+                .type              = result,
                 .default_value_ptr = @ptrCast(&zero),
                 .is_comptime       = false,
-                .alignment         = @alignOf(Ret),
+                .alignment         = @alignOf(result),
             };
         }
         break :blk @Type(.{ .@"struct" = .{
@@ -31,113 +31,107 @@ pub fn Signals(comptime Spec: type) type {
         }});
     };
 
-    const N     = std.meta.fields(FullState).len;
-    const Mask  = std.meta.Int(.unsigned, @max(N, 1));
-    const Field = std.meta.FieldEnum(FullState);
+    const count = std.meta.fields(State).len;
+    const Mask  = std.meta.Int(.unsigned, @max(count, 1));
+    const Tag   = std.meta.FieldEnum(State);
 
-    const reach, const order, const compute_order = comptime blk: {
-        @setEvalBranchQuota(1000 + N * N * N * 10);
+    const reach, const order, const flow = comptime blk: {
+        @setEvalBranchQuota(1000 + count * count * count * 10);
 
-        // Build direct dependency masks from each compute fn's parameter struct.
-        var direct = [_]Mask{0} ** N;
-        for (std.meta.declarations(Spec.compute)) |decl| {
-            const t      = std.meta.fieldIndex(FullState, decl.name) orelse
-                @compileError("compute." ++ decl.name ++ " has no matching field in State");
-            const fn_val = @field(Spec.compute, decl.name);
-            const params = @typeInfo(@TypeOf(fn_val)).@"fn".params;
-            if (params.len != 1)
-                @compileError("compute." ++ decl.name ++ " must take exactly one struct argument");
-            const DepType = params[0].type orelse
-                @compileError("compute." ++ decl.name ++ " parameter must be a concrete type");
-            for (std.meta.fields(DepType)) |df| {
-                const dep = std.meta.fieldIndex(FullState, df.name) orelse
-                    @compileError("dependency '" ++ df.name ++ "' not found in State");
-                direct[t] |= bit(Mask, dep);
+        var direct = [_]Mask{0} ** count;
+        for (std.meta.declarations(spec.compute)) |decl| {
+            const target = std.meta.fieldIndex(State, decl.name) orelse
+                @compileError("missing field");
+            const func   = @field(spec.compute, decl.name);
+            const params = @typeInfo(@TypeOf(func)).@"fn".params;
+            if (params.len != 1) @compileError("needs one param");
+            const input  = params[0].type orelse @compileError("needs concrete type");
+            for (std.meta.fields(input)) |param| {
+                const depend = std.meta.fieldIndex(State, param.name) orelse
+                    @compileError("missing dependency");
+                direct[target] |= bit(Mask, depend);
             }
         }
 
-        // Floyd–Warshall transitive closure.
-        var trans = direct;
-        for (0..N) |_| for (0..N) |i| for (0..N) |j| {
-            if (trans[i] >> @intCast(j) & 1 == 1) trans[i] |= trans[j];
+        var paths = direct;
+        for (0..count) |_| for (0..count) |row| for (0..count) |col| {
+            if (paths[row] >> @intCast(col) & 1 == 1) paths[row] |= paths[col];
         };
 
-        // Kahn topological sort.
-        var sorted: [N]usize   = undefined;
-        var placed: Mask       = 0;
-        var k: usize           = 0;
-        while (k < N) {
-            const prev = k;
-            for (0..N) |i| {
-                if (placed >> @intCast(i) & 1 == 0 and direct[i] & ~placed == 0) {
-                    sorted[k] = i;
-                    placed    |= bit(Mask, i);
-                    k         += 1;
+        var sorted: [count]usize = undefined;
+        var placed: Mask         = 0;
+        var index: usize         = 0;
+        while (index < count) {
+            const prior = index;
+            for (0..count) |node| {
+                if (placed >> @intCast(node) & 1 == 0 and direct[node] & ~placed == 0) {
+                    sorted[index] = node;
+                    placed       |= bit(Mask, node);
+                    index        += 1;
                 }
             }
-            if (k == prev) @compileError("cycle in reactive graph");
+            if (index == prior) @compileError("cycle detected");
         }
 
-        // Subset of sorted that are compute (derived) nodes only.
-        const derived_len = std.meta.declarations(Spec.compute).len;
-        var corder: [derived_len]usize = undefined;
-        var ck: usize = 0;
-        for (sorted) |idx| {
-            const fname = @tagName(@as(Field, @enumFromInt(idx)));
-            if (@hasDecl(Spec.compute, fname)) {
-                corder[ck] = idx;
-                ck += 1;
+        const length = std.meta.declarations(spec.compute).len;
+        var subset: [length]usize = undefined;
+        var step: usize           = 0;
+        for (sorted) |node| {
+            const name = @tagName(@as(Tag, @enumFromInt(node)));
+            if (@hasDecl(spec.compute, name)) {
+                subset[step] = node;
+                step += 1;
             }
         }
 
-        break :blk .{ trans, sorted, corder };
+        break :blk .{ paths, sorted, subset };
     };
 
-    _ = order; // available for callers who need the full sorted order
+    _ = order; 
 
     return struct {
         const Self = @This();
-        pub const Dirty = Mask;
+        pub const Flags = Mask;
 
-        state: FullState = .{},
-        dirty: Mask      = 0,
+        state: State = .{},
+        dirty: Mask  = 0,
 
-        pub inline fn set(self: *Self, comptime f: Field, v: std.meta.fieldInfo(FullState, f).type) void {
-            const ptr = &@field(self.state, @tagName(f));
-            if (std.meta.eql(ptr.*, v)) return;
-            ptr.*      = v;
-            self.dirty |= bit(Mask, @intFromEnum(f));
+        pub inline fn set(self: *Self, comptime tag: Tag, value: std.meta.fieldInfo(State, tag).type) void {
+            const ptr = &@field(self.state, @tagName(tag));
+            if (std.meta.eql(ptr.*, value)) return;
+            ptr.* = value;
+            self.dirty |= bit(Mask, @intFromEnum(tag));
         }
 
-        pub inline fn get(self: *const Self, comptime f: Field) std.meta.fieldInfo(FullState, f).type {
-            return @field(self.state, @tagName(f));
+        pub inline fn get(self: *const Self, comptime tag: Tag) std.meta.fieldInfo(State, tag).type {
+            return @field(self.state, @tagName(tag));
         }
 
         pub fn flush(self: *Self) Mask {
-            var d = self.dirty;
-            if (d == 0) return 0;
-            inline for (compute_order) |idx| {
-                const fname   = comptime @tagName(@as(Field, @enumFromInt(idx)));
-                const m       = comptime reach[idx];
-                if (m != 0 and d & m != 0) {
-                    const fn_val  = @field(Spec.compute, fname);
-                    const DepType = @typeInfo(@TypeOf(fn_val)).@"fn".params[0].type.?;
-                    var deps: DepType = undefined;
-                    inline for (std.meta.fields(DepType)) |df|
-                        @field(deps, df.name) = @field(self.state, df.name);
-                    @field(self.state, fname) = fn_val(deps);
-                    d |= bit(Mask, idx);
+            var flags = self.dirty;
+            if (flags == 0) return 0;
+            inline for (flow) |node| {
+                const name = comptime @tagName(@as(Tag, @enumFromInt(node)));
+                const mask = comptime reach[node];
+                if (mask != 0 and flags & mask != 0) {
+                    const func  = @field(spec.compute, name);
+                    const input = @typeInfo(@TypeOf(func)).@"fn".params[0].type.?;
+                    var deps: input = undefined;
+                    inline for (std.meta.fields(input)) |param|
+                        @field(deps, param.name) = @field(self.state, param.name);
+                    @field(self.state, name) = func(deps);
+                    flags |= bit(Mask, node);
                 }
             }
             self.dirty = 0;
-            return d;
+            return flags;
         }
 
-        pub fn watch(comptime watched: []const Field) Mask {
+        pub fn watch(comptime viewed: []const Tag) Mask {
             comptime {
-                var m: Mask = 0;
-                for (watched) |f| m |= bit(Mask, @intFromEnum(f)) | reach[@intFromEnum(f)];
-                return m;
+                var mask: Mask = 0;
+                for (viewed) |tag| mask |= bit(Mask, @intFromEnum(tag)) | reach[@intFromEnum(tag)];
+                return mask;
             }
         }
     };
