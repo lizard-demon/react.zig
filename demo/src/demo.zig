@@ -93,7 +93,7 @@ pub fn main() void {
     rl.setTargetFPS(60);
 
     var ui : Ui = .{};
-    ui.dirty = std.math.maxInt(Ui.Flags);
+    ui.dirty = Ui.Flags.initFull();
     _ = ui.flush();
 
     const resized = comptime Ui.watch(&.{ .cols, .rows });
@@ -167,7 +167,10 @@ pub fn main() void {
         const flags = ui.flush();
 
         // ── canvas lifecycle ───────────────────────────────────────────
-        if (!rt_ok or flags & resized != 0) {
+        var overlap = flags;
+        overlap.setIntersection(resized);
+        
+        if (!rt_ok or overlap.count() > 0) {
             for (&snaps) |*s| { if (s.*) |im| rl.unloadImage(im); s.* = null; }
             sn = 0;
             if (rt_ok) rl.unloadRenderTexture(rt);
@@ -380,7 +383,7 @@ pub fn main() void {
             "scroll     brush size",
             "ctrl+scrl  stabilizer",
             "tab / E    tool",
-            "[   ]      page size",
+            "[    ]      page size",
             "ctrl+Z     undo",
             "ctrl+S     export png",
             "C          clear",

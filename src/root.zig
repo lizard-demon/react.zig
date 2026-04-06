@@ -1,8 +1,5 @@
-const std = @import("std");
+ const std = @import("std");
 
-inline fn bit(comptime mask: type, comptime shift: usize) mask {
-    return @as(mask, 1) << @intCast(shift);
-}
 
 pub fn Signals(comptime spec: type) type {
     const State = comptime blk: {
@@ -32,13 +29,13 @@ pub fn Signals(comptime spec: type) type {
     };
 
     const count = std.meta.fields(State).len;
-    const Mask  = std.meta.Int(.unsigned, @max(count, 1));
+    const Mask  = std.StaticBitSet(@max(count, 1));
     const Tag   = std.meta.FieldEnum(State);
 
     const reach, const order, const flow = comptime blk: {
         @setEvalBranchQuota(1000 + count * count * count * 10);
 
-        var direct = [_]Mask{0} ** count;
+        var direct = [_]Mask{Mask.initEmpty()} ** count;
         for (std.meta.declarations(spec.compute)) |decl| {
             const target = std.meta.fieldIndex(State, decl.name) orelse
                 @compileError("missing field");
@@ -49,25 +46,31 @@ pub fn Signals(comptime spec: type) type {
             for (std.meta.fields(input)) |param| {
                 const depend = std.meta.fieldIndex(State, param.name) orelse
                     @compileError("missing dependency");
-                direct[target] |= bit(Mask, depend);
+                direct[target].set(depend);
             }
         }
 
+        // Transitive closure mapping via bitset union
         var paths = direct;
         for (0..count) |_| for (0..count) |row| for (0..count) |col| {
-            if (paths[row] >> @intCast(col) & 1 == 1) paths[row] |= paths[col];
+            if (paths[row].isSet(col)) paths[row].setUnion(paths[col]);
         };
 
         var sorted: [count]usize = undefined;
-        var placed: Mask         = 0;
+        var placed = Mask.initEmpty();
         var index: usize         = 0;
         while (index < count) {
             const prior = index;
             for (0..count) |node| {
-                if (placed >> @intCast(node) & 1 == 0 and direct[node] & ~placed == 0) {
-                    sorted[index] = node;
-                    placed       |= bit(Mask, node);
-                    index        += 1;
+                if (!placed.isSet(node)) {
+                    var overlap = direct[node];
+                    overlap.setIntersection(placed);
+                    // If node dependencies are a subset of `placed`, it's ready.
+                    if (overlap.count() == direct[node].count()) {
+                        sorted[index] = node;
+                        placed.set(node);
+                        index += 1;
+                    }
                 }
             }
             if (index == prior) @compileError("cycle detected");
@@ -94,13 +97,13 @@ pub fn Signals(comptime spec: type) type {
         pub const Flags = Mask;
 
         state: State = .{},
-        dirty: Mask  = 0,
+        dirty: Mask  = Mask.initEmpty(),
 
         pub inline fn set(self: *Self, comptime tag: Tag, value: std.meta.fieldInfo(State, tag).type) void {
             const ptr = &@field(self.state, @tagName(tag));
             if (std.meta.eql(ptr.*, value)) return;
             ptr.* = value;
-            self.dirty |= bit(Mask, @intFromEnum(tag));
+            self.dirty.set(@intFromEnum(tag));
         }
 
         pub inline fn get(self: *const Self, comptime tag: Tag) std.meta.fieldInfo(State, tag).type {
@@ -109,30 +112,37 @@ pub fn Signals(comptime spec: type) type {
 
         pub fn flush(self: *Self) Mask {
             var flags = self.dirty;
-            if (flags == 0) return 0;
+            if (flags.count() == 0) return Mask.initEmpty();
             inline for (flow) |node| {
                 const name = comptime @tagName(@as(Tag, @enumFromInt(node)));
                 const mask = comptime reach[node];
-                if (mask != 0 and flags & mask != 0) {
+
+                var overlap = mask;
+                overlap.setIntersection(flags);
+
+                if (mask.count() > 0 and overlap.count() > 0) {
                     const func  = @field(spec.compute, name);
                     const input = @typeInfo(@TypeOf(func)).@"fn".params[0].type.?;
                     var deps: input = undefined;
                     inline for (std.meta.fields(input)) |param|
                         @field(deps, param.name) = @field(self.state, param.name);
                     @field(self.state, name) = func(deps);
-                    flags |= bit(Mask, node);
+                    flags.set(node);
                 }
             }
-            self.dirty = 0;
+            self.dirty = Mask.initEmpty();
             return flags;
         }
 
         pub fn watch(comptime viewed: []const Tag) Mask {
             comptime {
-                var mask: Mask = 0;
-                for (viewed) |tag| mask |= bit(Mask, @intFromEnum(tag)) | reach[@intFromEnum(tag)];
+                var mask = Mask.initEmpty();
+                for (viewed) |tag| {
+                    mask.set(@intFromEnum(tag));
+                    mask.setUnion(reach[@intFromEnum(tag)]);
+                }
                 return mask;
             }
         }
     };
-}
+} 
