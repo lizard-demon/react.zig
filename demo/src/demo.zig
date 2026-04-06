@@ -3,7 +3,7 @@ const rl    = @import("raylib");
 const react = @import("react");
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Reactive spec — sources only in State; derived entirely implicit via compute
+//  Reactive spec
 // ─────────────────────────────────────────────────────────────────────────────
 const App = react.Signals(struct {
     pub const State = struct {
@@ -14,20 +14,13 @@ const App = react.Signals(struct {
         mode:  i32 = 0,   // 0=chill  1=party  2=zen
         time:  f32 = 0.0,
     };
-
     pub const compute = struct {
         pub fn luminance(s: struct { red: f32, green: f32, blue: f32 }) f32 {
             return 0.2126*s.red + 0.7152*s.green + 0.0722*s.blue;
         }
-        pub fn doubled(s: struct { count: i32 }) i32 {
-            return s.count * 2;
-        }
-        pub fn quadrupled(s: struct { doubled: i32 }) i32 {
-            return s.doubled * 2;
-        }
-        pub fn is_even(s: struct { count: i32 }) bool {
-            return @rem(s.count, 2) == 0;
-        }
+        pub fn doubled(s: struct { count: i32 }) i32 { return s.count * 2; }
+        pub fn quadrupled(s: struct { doubled: i32 }) i32 { return s.doubled * 2; }
+        pub fn is_even(s: struct { count: i32 }) bool { return @rem(s.count, 2) == 0; }
         pub fn ring_radius(s: struct { mode: i32, count: i32, luminance: f32 }) f32 {
             return switch (s.mode) {
                 0    => 40.0 + s.luminance * 80.0,
@@ -72,25 +65,26 @@ const EDGES = [_][2]u8{
 // ─────────────────────────────────────────────────────────────────────────────
 //  Theme
 // ─────────────────────────────────────────────────────────────────────────────
-const PANEL   = rl.Color{ .r=26,  .g=28,  .b=38,  .a=255 };
-const PANEL2  = rl.Color{ .r=38,  .g=42,  .b=58,  .a=255 };
-const TXT     = rl.Color{ .r=200, .g=210, .b=230, .a=255 };
-const DIM     = rl.Color{ .r=80,  .g=90,  .b=110, .a=255 };
-const ACCENT  = rl.Color{ .r=80,  .g=170, .b=255, .a=255 };
-const C_R     = rl.Color{ .r=240, .g=70,  .b=70,  .a=255 };
-const C_G     = rl.Color{ .r=70,  .g=210, .b=110, .a=255 };
-const C_Y     = rl.Color{ .r=255, .g=210, .b=60,  .a=255 };
-const WHITE   = rl.Color{ .r=255, .g=255, .b=255, .a=255 };
-const BG_DARK = rl.Color{ .r=12,  .g=12,  .b=18,  .a=255 };
+fn rgb(r: u8, g: u8, b: u8) rl.Color { return .{ .r=r, .g=g, .b=b, .a=255 }; }
+
+const PANEL   = rgb(26,  28,  38 );
+const PANEL2  = rgb(38,  42,  58 );
+const TXT     = rgb(200, 210, 230);
+const DIM     = rgb(80,  90,  110);
+const ACCENT  = rgb(80,  170, 255);
+const C_R     = rgb(240, 70,  70 );
+const C_G     = rgb(70,  210, 110);
+const C_Y     = rgb(255, 210, 60 );
+const WHITE   = rgb(255, 255, 255);
+const BG_DARK = rgb(12,  12,  18 );
+const C_B     = rgb(70,  130, 255);
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-fn v2(x: f32, y: f32) rl.Vector2 { return .{ .x=x, .y=y }; }
-fn rc(x: f32, y: f32, w: f32, h: f32) rl.Rectangle {
-    return .{ .x=x, .y=y, .width=w, .height=h };
-}
-fn fi(v: f32) c_int { return @intFromFloat(v); }
+fn v2(x: f32, y: f32) rl.Vector2    { return .{ .x=x, .y=y }; }
+fn rc(x: f32, y: f32, w: f32, h: f32) rl.Rectangle { return .{ .x=x, .y=y, .width=w, .height=h }; }
+fn fi(v: f32) c_int                 { return @intFromFloat(v); }
 fn hit(m: rl.Vector2, x: f32, y: f32, w: f32, h: f32) bool {
     return m.x>=x and m.x<=x+w and m.y>=y and m.y<=y+h;
 }
@@ -118,14 +112,31 @@ pub fn main() void {
     var drag: i32 = -1;
     var elapsed: f32 = 0;
 
-    // Force a full flush on startup so all derived fields are initialised.
+    // Force full flush on startup so all derived fields are initialised.
     ui.dirty = std.math.maxInt(App.Dirty);
     _ = ui.flush();
 
-    const SX: f32 = 75;
-    const SW: f32 = 205;
-    const SH: f32 = 14;
-    const SY = [3]f32{ 118, 160, 202 };
+    const SX: f32  = 75;
+    const SW: f32  = 205;
+    const SH: f32  = 14;
+    const SY        = [3]f32{ 118, 160, 202 };
+
+    const Slider = struct { label: [:0]const u8, col: rl.Color };
+    const sliders = [3]Slider{
+        .{ .label="R", .col=C_R },
+        .{ .label="G", .col=C_G },
+        .{ .label="B", .col=C_B },
+    };
+
+    const Button = struct { x: f32, label: [:0]const u8 };
+    const buttons = [2]Button{ .{ .x=368, .label="-" }, .{ .x=538, .label="+" } };
+
+    const Mode = struct { name: [:0]const u8, col: rl.Color, desc: [:0]const u8 };
+    const modes = [3]Mode{
+        .{ .name="Chill", .col=ACCENT, .desc="ring = f(luminance)    pulse = gentle" },
+        .{ .name="Party", .col=C_Y,    .desc="ring = f(count % 10)   pulse = fast"   },
+        .{ .name="Zen",   .col=C_G,    .desc="ring = 70 constant     pulse = breathe"},
+    };
 
     while (!rl.windowShouldClose()) {
         elapsed += rl.getFrameTime();
@@ -173,60 +184,57 @@ pub fn main() void {
         rl.beginDrawing();
         defer rl.endDrawing();
 
-        var b: [64]u8 = undefined;
+        var scratch: [64]u8 = undefined;
         const bg = ui.get(.bg_shade);
         rl.clearBackground(.{ .r=bg, .g=bg, .b=bg+|8, .a=255 });
 
         const swatch = toColor(ui.get(.red), ui.get(.green), ui.get(.blue));
 
-        // Title
+        // Title bar
         rl.drawRectangle(0, 0, 1100, 48, BG_DARK);
         rl.drawText("COMPTIME REACTIVE SIGNALS", 16, 14, 20, ACCENT);
-        rl.drawText(z(&b, "{d} fps", .{rl.getFPS()}), 1024, 16, 16, DIM);
+        rl.drawText(z(&scratch, "{d} fps", .{rl.getFPS()}), 1024, 16, 16, DIM);
 
         // ── Color Mixer ───────────────────────────────────────────────────────
         rl.drawRectangleRounded(rc(20,68,300,260), 0.04, 8, PANEL);
         rl.drawText("COLOR MIXER", 36, 82, 14, DIM);
 
-        const SCOL = [3]rl.Color{ C_R, C_G, .{.r=70,.g=130,.b=255,.a=255} };
-        const SLBL = [3][:0]const u8{ "R", "G", "B" };
         const sval = [3]f32{ ui.get(.red), ui.get(.green), ui.get(.blue) };
-
-        for (0..3) |si| {
+        for (sliders, 0..) |sl, si| {
             const sy  = SY[si];
             const val = sval[si];
-            const col = SCOL[si];
-            rl.drawText(SLBL[si], 42, fi(sy-2), 16, col);
-            rl.drawRectangleRounded(rc(SX,sy,SW,SH), 0.5, 6, .{.r=18,.g=20,.b=28,.a=255});
+            rl.drawText(sl.label, 42, fi(sy-2), 16, sl.col);
+            rl.drawRectangleRounded(rc(SX,sy,SW,SH), 0.5, 6, rgb(18,20,28));
             const fw = val * SW;
-            if (fw > 1) rl.drawRectangleRounded(rc(SX,sy,fw,SH), 0.5, 6, rl.fade(col, 0.65));
-            rl.drawCircleV(v2(SX+fw, sy+SH*0.5), SH*0.7, col);
+            if (fw > 1) rl.drawRectangleRounded(rc(SX,sy,fw,SH), 0.5, 6, rl.fade(sl.col, 0.65));
+            rl.drawCircleV(v2(SX+fw, sy+SH*0.5), SH*0.7, sl.col);
             rl.drawCircleV(v2(SX+fw, sy+SH*0.5), SH*0.3, WHITE);
-            rl.drawText(z(&b, "{d:.0}", .{val*255}), 290, fi(sy-1), 13, DIM);
+            rl.drawText(z(&scratch, "{d:.0}", .{val*255}), 290, fi(sy-1), 13, DIM);
         }
         rl.drawRectangleRounded(rc(40,238,120,22), 0.3, 6, swatch);
-        rl.drawText(z(&b, "L = {d:.2}", .{ui.get(.luminance)}), 178, 240, 16,
+        rl.drawText(z(&scratch, "L = {d:.2}", .{ui.get(.luminance)}), 178, 240, 16,
             if (ui.get(.luminance) > 0.5) BG_DARK else WHITE);
 
         // ── Counter ───────────────────────────────────────────────────────────
         rl.drawRectangleRounded(rc(340,68,260,260), 0.04, 8, PANEL);
         rl.drawText("COUNTER", 356, 82, 14, DIM);
         {
-            const t  = z(&b, "{d}", .{ui.get(.count)});
+            const t  = z(&scratch, "{d}", .{ui.get(.count)});
             const tw = rl.measureText(t, 44);
             rl.drawText(t, 470 - @divTrunc(tw, 2), 108, 44, WHITE);
         }
-        inline for (.{ .{@as(f32,368), "-"}, .{@as(f32,538), "+"} }) |btn| {
-            const bx  = btn[0];
-            const hov = hit(ms, bx, 162, 54, 36);
-            rl.drawRectangleRounded(rc(bx,162,54,36), 0.3, 6, if (hov) PANEL2 else PANEL);
-            rl.drawRectangleRounded(rc(bx,162,54,36), 0.3, 6,
+
+        for (buttons) |btn| {
+            const hov = hit(ms, btn.x, 162, 54, 36);
+            rl.drawRectangleRounded(rc(btn.x,162,54,36), 0.3, 6, if (hov) PANEL2 else PANEL);
+            rl.drawRectangleRounded(rc(btn.x,162,54,36), 0.3, 6,
                 rl.fade(ACCENT, if (hov) @as(f32,0.3) else @as(f32,0.08)));
-            rl.drawText(btn[1], fi(bx+18), 167, 26, TXT);
+            rl.drawText(btn.label, fi(btn.x+18), 167, 26, TXT);
         }
-        rl.drawText(z(&b, "x2 = {d}", .{ui.get(.doubled)}),    370, 215, 20, ACCENT);
-        rl.drawText(z(&b, "x4 = {d}", .{ui.get(.quadrupled)}), 370, 240, 20, ACCENT);
-        rl.drawText(if (ui.get(.is_even)) "even" else "odd",   370, 272, 18,
+
+        rl.drawText(z(&scratch, "x2 = {d}", .{ui.get(.doubled)}),    370, 215, 20, ACCENT);
+        rl.drawText(z(&scratch, "x4 = {d}", .{ui.get(.quadrupled)}), 370, 240, 20, ACCENT);
+        rl.drawText(if (ui.get(.is_even)) "even" else "odd",          370, 272, 18,
             if (ui.get(.is_even)) C_G else C_R);
 
         // ── Reactive Ring ─────────────────────────────────────────────────────
@@ -253,43 +261,33 @@ pub fn main() void {
         }
         rl.drawCircleV(v2(RCX,RCY), 6.0*pls, rl.fade(swatch, pls*0.7));
         rl.drawCircleV(v2(RCX,RCY), 3, WHITE);
-        rl.drawText(z(&b, "r = {d:.0}", .{ring_r}), fi(RCX-16), fi(RCY+90), 13, DIM);
+        rl.drawText(z(&scratch, "r = {d:.0}", .{ring_r}), fi(RCX-16), fi(RCY+90), 13, DIM);
 
         // ── Mode Selector ─────────────────────────────────────────────────────
         rl.drawRectangleRounded(rc(20,340,1060,66), 0.03, 8, PANEL);
         rl.drawText("MODE", 36, 353, 14, DIM);
 
-        const M_N = [3][:0]const u8{ "Chill", "Party", "Zen" };
-        const M_C = [3]rl.Color{ ACCENT, C_Y, C_G };
-        const cur: usize = @intCast(std.math.clamp(ui.get(.mode), 0, 2));
-
-        for (0..3) |mi| {
+        const cur: usize = @intCast(ui.get(.mode));
+        for (modes, 0..) |m, mi| {
             const mx  = 30.0 + @as(f32,@floatFromInt(mi)) * 110.0;
             const sel = mi == cur;
             const hov = hit(ms, mx, 368, 90, 30);
             rl.drawRectangleRounded(rc(mx,368,90,30), 0.3, 6,
-                if (sel) M_C[mi] else if (hov) PANEL2 else rl.fade(PANEL2, 0.5));
-            const tw = rl.measureText(M_N[mi], 16);
-            rl.drawText(M_N[mi],
+                if (sel) m.col else if (hov) PANEL2 else rl.fade(PANEL2, 0.5));
+            const tw = rl.measureText(m.name, 16);
+            rl.drawText(m.name,
                 fi(mx + (90.0 - @as(f32,@floatFromInt(tw))) * 0.5),
-                fi(375), 16, if (sel) BG_DARK else DIM);
+                375, 16, if (sel) BG_DARK else DIM);
         }
-        {
-            const desc: [:0]const u8 = switch (cur) {
-                0    => "ring = f(luminance)    pulse = gentle",
-                1    => "ring = f(count % 10)   pulse = fast",
-                else => "ring = 70 constant     pulse = breathe",
-            };
-            rl.drawText(desc, 370, 378, 13, rl.fade(M_C[cur], 0.6));
-        }
+        rl.drawText(modes[cur].desc, 370, 378, 13, rl.fade(modes[cur].col, 0.6));
 
         // ── Signal Propagation Graph ──────────────────────────────────────────
         const SGY: f32 = 418;
         rl.drawRectangleRounded(rc(20,SGY,1060,262), 0.03, 8, PANEL);
         rl.drawText("SIGNAL PROPAGATION", 36, fi(SGY+12), 14, DIM);
-        rl.drawText(z(&b, "dirty  0b{b:0>13}", .{@as(u16,@intCast(dirty))}),
+        rl.drawText(z(&scratch, "dirty  0b{b:0>13}", .{@as(u16,@intCast(dirty))}),
             840, fi(SGY+12), 12, rl.fade(ACCENT, 0.5));
-        rl.drawText(z(&b, "{d}/{d} propagated", .{@popCount(dirty), N_SIG}),
+        rl.drawText(z(&scratch, "{d}/{d} propagated", .{@popCount(dirty), N_SIG}),
             680, fi(SGY+12), 12, DIM);
 
         const ROW_Y = [2]f32{ SGY+55, SGY+135 };
