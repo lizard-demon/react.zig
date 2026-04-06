@@ -1,103 +1,118 @@
- const std = @import("std");
+const std = @import("std");
 
+// Internal API
 
-pub fn Signals(comptime spec: type) type {
-    const State = comptime blk: {
-        const source = std.meta.fields(spec.State);
-        const derive = std.meta.declarations(spec.compute);
-        var fields: [source.len + derive.len]std.builtin.Type.StructField = undefined;
-        for (source, 0..) |field, index| fields[index] = field;
-        for (derive, 0..) |decl, index| {
-            const func   = @field(spec.compute, decl.name);
-            const result = @typeInfo(@TypeOf(func)).@"fn".return_type orelse
-                @compileError("missing return type");
-            var zero: result = std.mem.zeroes(result);
-            fields[source.len + index] = .{
-                .name              = decl.name,
-                .type              = result,
-                .default_value_ptr = @ptrCast(&zero),
-                .is_comptime       = false,
-                .alignment         = @alignOf(result),
-            };
-        }
-        break :blk @Type(.{ .@"struct" = .{
-            .layout   = .auto,
-            .fields   = &fields,
-            .decls    = &.{},
-            .is_tuple = false,
-        }});
-    };
+fn buildState(comptime spec: type) type {
+    const source = std.meta.fields(spec.State);
+    const derive = std.meta.declarations(spec.compute);
+    var fields: [source.len + derive.len]std.builtin.Type.StructField = undefined;
 
+    for (source, 0..) |field, index| fields[index] = field;
+    for (derive, 0..) |decl, index| {
+        const func = @field(spec.compute, decl.name);
+        const result = @typeInfo(@TypeOf(func)).@"fn".return_type orelse @compileError("missing return type");
+        
+        const Default = struct {
+            const val: result = std.mem.zeroes(result);
+        };
+
+        fields[source.len + index] = .{
+            .name = decl.name,
+            .type = result,
+            .default_value_ptr = @ptrCast(&Default.val),
+            .is_comptime = false,
+            .alignment = @alignOf(result),
+        };
+    }
+
+    return @Type(.{ .@"struct" = .{
+        .layout = .auto,
+        .fields = &fields,
+        .decls = &.{},
+        .is_tuple = false,
+    }});
+}
+
+fn buildGraph(comptime spec: type, comptime State: type) type {
     const count = std.meta.fields(State).len;
-    const Mask  = std.StaticBitSet(@max(count, 1));
-    const Tag   = std.meta.FieldEnum(State);
+    const Mask = std.StaticBitSet(@max(count, 1));
+    const Tag = std.meta.FieldEnum(State);
+    const decl_len = std.meta.declarations(spec.compute).len;
 
-    const reach, const order, const flow = comptime blk: {
-        @setEvalBranchQuota(1000 + count * count * count * 10);
+    const Graph = comptime blk: {
+        @setEvalBranchQuota(1000 + count * count * 10);
 
         var direct = [_]Mask{Mask.initEmpty()} ** count;
         for (std.meta.declarations(spec.compute)) |decl| {
-            const target = std.meta.fieldIndex(State, decl.name) orelse
-                @compileError("missing field");
-            const func   = @field(spec.compute, decl.name);
-            const params = @typeInfo(@TypeOf(func)).@"fn".params;
-            if (params.len != 1) @compileError("needs one param");
-            const input  = params[0].type orelse @compileError("needs concrete type");
+            const target = std.meta.fieldIndex(State, decl.name).?;
+            const func = @field(spec.compute, decl.name);
+            const input = @typeInfo(@TypeOf(func)).@"fn".params[0].type.?;
+            
             for (std.meta.fields(input)) |param| {
-                const depend = std.meta.fieldIndex(State, param.name) orelse
-                    @compileError("missing dependency");
+                const depend = std.meta.fieldIndex(State, param.name).?;
                 direct[target].set(depend);
             }
         }
 
-        // Transitive closure mapping via bitset union
-        var paths = direct;
-        for (0..count) |_| for (0..count) |row| for (0..count) |col| {
-            if (paths[row].isSet(col)) paths[row].setUnion(paths[col]);
-        };
-
-        var sorted: [count]usize = undefined;
+        var reach = direct;
+        var flow: [decl_len]usize = undefined;
         var placed = Mask.initEmpty();
-        var index: usize         = 0;
-        while (index < count) {
-            const prior = index;
+        var idx: usize = 0;
+        var step: usize = 0;
+
+        while (idx < count) {
+            const prior = idx;
             for (0..count) |node| {
                 if (!placed.isSet(node)) {
                     var overlap = direct[node];
                     overlap.setIntersection(placed);
-                    // If node dependencies are a subset of `placed`, it's ready.
+                    
                     if (overlap.count() == direct[node].count()) {
-                        sorted[index] = node;
                         placed.set(node);
-                        index += 1;
+                        
+                        // Accumulate reachability
+                        for (0..count) |dep| {
+                            if (direct[node].isSet(dep)) {
+                                reach[node].setUnion(reach[dep]);
+                            }
+                        }
+
+                        const name = @tagName(@as(Tag, @enumFromInt(node)));
+                        if (@hasDecl(spec.compute, name)) {
+                            flow[step] = node;
+                            step += 1;
+                        }
+                        idx += 1;
                     }
                 }
             }
-            if (index == prior) @compileError("cycle detected");
+            if (idx == prior) @compileError("cycle detected");
         }
 
-        const length = std.meta.declarations(spec.compute).len;
-        var subset: [length]usize = undefined;
-        var step: usize           = 0;
-        for (sorted) |node| {
-            const name = @tagName(@as(Tag, @enumFromInt(node)));
-            if (@hasDecl(spec.compute, name)) {
-                subset[step] = node;
-                step += 1;
-            }
-        }
-
-        break :blk .{ paths, sorted, subset };
+        break :blk .{ .direct = direct, .reach = reach, .flow = flow };
     };
 
-    _ = order; 
+    return struct {
+        pub const Flags = Mask;
+        pub const direct = Graph.direct;
+        pub const reachability = Graph.reach;
+        pub const evaluation_order = Graph.flow;
+    };
+}
+
+// Public API
+
+pub fn Signals(comptime spec: type) type {
+    const State = buildState(spec);
+    const Graph = buildGraph(spec, State);
+    const Tag = std.meta.FieldEnum(State);
 
     return struct {
         const Self = @This();
-        pub const Flags = Mask;
+        pub const Flags = Graph.Flags;
 
         state: State = .{},
-        dirty: Mask  = Mask.initEmpty(),
+        dirty: Flags = Flags.initEmpty(),
 
         pub inline fn set(self: *Self, comptime tag: Tag, value: std.meta.fieldInfo(State, tag).type) void {
             const ptr = &@field(self.state, @tagName(tag));
@@ -110,39 +125,44 @@ pub fn Signals(comptime spec: type) type {
             return @field(self.state, @tagName(tag));
         }
 
-        pub fn flush(self: *Self) Mask {
+        pub fn flush(self: *Self) Flags {
             var flags = self.dirty;
-            if (flags.count() == 0) return Mask.initEmpty();
-            inline for (flow) |node| {
-                const name = comptime @tagName(@as(Tag, @enumFromInt(node)));
-                const mask = comptime reach[node];
+            if (flags.count() == 0) return Flags.initEmpty();
 
-                var overlap = mask;
+            inline for (Graph.evaluation_order) |node| {
+                const name = comptime @tagName(@as(Tag, @enumFromInt(node)));
+                const direct_deps = comptime Graph.direct[node];
+
+                var overlap = direct_deps;
                 overlap.setIntersection(flags);
 
-                if (mask.count() > 0 and overlap.count() > 0) {
-                    const func  = @field(spec.compute, name);
+                // Only evaluate if a direct dependency was flagged
+                if (overlap.count() > 0) {
+                    const func = @field(spec.compute, name);
                     const input = @typeInfo(@TypeOf(func)).@"fn".params[0].type.?;
                     var deps: input = undefined;
-                    inline for (std.meta.fields(input)) |param|
+                    
+                    inline for (std.meta.fields(input)) |param| {
                         @field(deps, param.name) = @field(self.state, param.name);
+                    }
+                        
                     @field(self.state, name) = func(deps);
-                    flags.set(node);
+                    flags.set(node); // Cascades dirtiness to downstream nodes
                 }
             }
-            self.dirty = Mask.initEmpty();
+            self.dirty = Flags.initEmpty();
             return flags;
         }
 
-        pub fn watch(comptime viewed: []const Tag) Mask {
+        pub fn watch(comptime viewed: []const Tag) Flags {
             comptime {
-                var mask = Mask.initEmpty();
+                var mask = Flags.initEmpty();
                 for (viewed) |tag| {
                     mask.set(@intFromEnum(tag));
-                    mask.setUnion(reach[@intFromEnum(tag)]);
+                    mask.setUnion(Graph.reachability[@intFromEnum(tag)]);
                 }
                 return mask;
             }
         }
     };
-} 
+}
