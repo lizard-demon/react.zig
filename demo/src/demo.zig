@@ -99,7 +99,7 @@ const App = struct {
 
     pub fn init() App {
         var self = App{};
-        self.ui.dirty = Ui.Flags.initFull();
+        self.ui.dirty = Ui.Mask.initFull();
         _ = self.ui.flush();
         return self;
     }
@@ -156,7 +156,7 @@ const App = struct {
         if (!ctrl and rl.isKeyPressed(.c)) self.do_clear = true;
     }
 
-    pub fn updateCanvas(self: *App, flags: Ui.Flags) void {
+    pub fn updateCanvas(self: *App, flags: Ui.Mask) void {
         const resized = comptime Ui.watch(&.{ .cols, .rows });
         var overlap = flags;
         overlap.setIntersection(resized);
