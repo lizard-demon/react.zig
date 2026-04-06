@@ -79,7 +79,10 @@ pub fn Signals(comptime spec: type) type {
             if (self.dirty.count() == 0) return self.dirty;
             var out = self.dirty;
             inline for (Graph.order) |idx| {
-                if (Graph.direct[idx].mask & out.mask != 0) {
+                var intersection = Graph.direct[idx];
+                intersection.setIntersection(out);
+
+                if (intersection.count() != 0) {
                     const name = @tagName(@as(Tag, @enumFromInt(idx)));
                     const func = @field(spec.compute, name);
                     const Args = @typeInfo(@TypeOf(func)).@"fn".params[0].type.?;
