@@ -29,21 +29,18 @@ pub fn Signals(comptime spec: type) type {
         const Mask = std.StaticBitSet(fields.len);
         var direct = [_]Mask{Mask.initEmpty()} ** fields.len;
         var reach = [_]Mask{Mask.initEmpty()} ** fields.len;
-        
-        // 1. Map dependencies
+
         for (decls) |decl| {
             const idx = std.meta.fieldIndex(State, decl.name).?;
             const Params = @typeInfo(@TypeOf(@field(spec.compute, decl.name))).@"fn".params[0].type.?;
             inline for (std.meta.fields(Params)) |p| direct[idx].set(std.meta.fieldIndex(State, p.name).?);
         }
 
-        // 2. Initialize visited with base State fields (the "sources")
         var visited = Mask.initEmpty();
         inline for (std.meta.fields(spec.State)) |f| {
             visited.set(std.meta.fieldIndex(State, f.name).?);
         }
 
-        // 3. Sort computed properties
         var order: [decls.len]usize = undefined;
         for (0..decls.len) |i| {
             for (0..fields.len) |n| {
@@ -52,23 +49,26 @@ pub fn Signals(comptime spec: type) type {
                 if (direct[n].subsetOf(visited)) {
                     visited.set(n);
                     order[i] = n;
+
                     reach[n] = direct[n];
                     for (0..fields.len) |d| {
                         if (direct[n].isSet(d)) reach[n].setUnion(reach[d]);
                     }
+
                     break;
                 }
             } else @compileError("Cycle or missing source detected");
         }
+
         break :blk .{ .Mask = Mask, .direct = direct, .reach = reach, .order = order };
     };
 
     return struct {
         const Self = @This();
-        pub const Flags = Graph.Mask;
+        pub const Mask = Graph.Mask;
 
         state: State = .{},
-        dirty: Flags = Flags.initEmpty(),
+        dirty: Mask = Mask.initEmpty(),
 
         pub fn set(self: *Self, comptime tag: Tag, val: std.meta.fieldInfo(State, tag).type) void {
             if (std.meta.eql(@field(self.state, @tagName(tag)), val)) return;
@@ -80,7 +80,7 @@ pub fn Signals(comptime spec: type) type {
             return @field(self.state, @tagName(tag));
         }
 
-        pub fn flush(self: *Self) Flags {
+        pub fn flush(self: *Self) Mask {
             if (self.dirty.count() == 0) return self.dirty;
             var out = self.dirty;
 
@@ -99,12 +99,12 @@ pub fn Signals(comptime spec: type) type {
                     out.set(idx);
                 }
             }
-            self.dirty = Flags.initEmpty();
+            self.dirty = Mask.initEmpty();
             return out;
         }
 
-        pub fn watch(comptime viewed: []const Tag) Flags {
-            var m = Flags.initEmpty();
+        pub fn watch(comptime viewed: []const Tag) Mask {
+            var m = Mask.initEmpty();
             for (viewed) |t| {
                 m.set(@intFromEnum(t));
                 m.setUnion(Graph.reach[@intFromEnum(t)]);
