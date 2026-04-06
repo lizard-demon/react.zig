@@ -9,7 +9,12 @@ pub fn Signals(comptime spec: type) type {
         for (S, 0..) |f, i| fields[i] = f;
         for (D, 0..) |d, i| {
             const T = @typeInfo(@TypeOf(@field(spec.compute, d.name))).@"fn".return_type.?;
-            fields[S.len + i] = .{ .name = d.name, .type = T, .default_value_ptr = @ptrCast(&struct { const v: T = std.mem.zeroes(T); }.v), .is_comptime = false, .alignment = @alignOf(T) };
+            fields[S.len + i] = .{
+                .name = d.name,
+                .type = T,
+                .default_value_ptr = @ptrCast(&struct { const v: T = std.mem.zeroes(T); }.v),
+                .is_comptime = false,
+                .alignment = @alignOf(T) };
         }
         break :blk @Type(.{ .@"struct" = .{ .layout = .auto, .fields = &fields, .decls = &.{}, .is_tuple = false } });
     };
@@ -78,11 +83,13 @@ pub fn Signals(comptime spec: type) type {
         pub fn flush(self: *Self) Flags {
             if (self.dirty.count() == 0) return self.dirty;
             var out = self.dirty;
+
             inline for (Graph.order) |idx| {
+
                 var intersection = Graph.direct[idx];
                 intersection.setIntersection(out);
-
                 if (intersection.count() != 0) {
+
                     const name = @tagName(@as(Tag, @enumFromInt(idx)));
                     const func = @field(spec.compute, name);
                     const Args = @typeInfo(@TypeOf(func)).@"fn".params[0].type.?;
