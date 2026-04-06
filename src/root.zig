@@ -1,34 +1,73 @@
 const std = @import("std");
 
 pub fn Signals(comptime Spec: type) type {
-    const N     = std.meta.fields(Spec.State).len;
-    const Mask  = std.meta.Int(.unsigned, @max(N, 1));
-    const Field = std.meta.FieldEnum(Spec.State);
 
-    // Entire graph resolved at comptime: direct deps → transitive closure → topo order.
-    const reach, const order = comptime blk: {
-        @setEvalBranchQuota(1000 + N * N * N * 10); // O(N³) Floyd–Warshall dominates
+    // ── Synthesize the full state type at comptime ────────────────────────────
+    // Sources come from Spec.State (user-declared, with their defaults).
+    // Derived fields are appended: name from decl, type from return type,
+    // default value is zero-initialized (overwritten on first flush).
+    const FullState = comptime blk: {
+        const src     = std.meta.fields(Spec.State);
+        const derived = std.meta.declarations(Spec.compute);
+        var fields: [src.len + derived.len]std.builtin.Type.StructField = undefined;
 
-        // Parse declarative rules into per-node dependency bitmasks.
-        var direct = [_]Mask{0} ** N;
-        for (std.meta.fields(@TypeOf(Spec.rules))) |rf| {
-            const t    = std.meta.fieldIndex(Spec.State, rf.name) orelse
-                @compileError("rule '" ++ rf.name ++ "' has no matching State field");
-            const rule = @field(Spec.rules, rf.name);
-            for (std.meta.fields(@TypeOf(rule))) |df|
-                direct[t] |= @as(Mask, 1) <<
-                    @intCast(@intFromEnum(@as(Field, @field(rule, df.name))));
+        for (src, 0..) |f, i| fields[i] = f;
+
+        for (derived, 0..) |decl, i| {
+            const fn_val = @field(Spec.compute, decl.name);
+            const Ret    = @typeInfo(@TypeOf(fn_val)).@"fn".return_type orelse
+                @compileError("compute." ++ decl.name ++ " must have an explicit return type");
+            const zero: Ret = std.mem.zeroes(Ret);
+            fields[src.len + i] = .{
+                .name              = decl.name,
+                .type              = Ret,
+                .default_value_ptr = @ptrCast(&zero),   // ← renamed in 0.15
+                .is_comptime       = false,
+                .alignment         = @alignOf(Ret),
+            };
         }
 
-        // Floyd–Warshall: reach[i] = bitmask of all transitive ancestors of i.
-        // Over-subscription falls out naturally: each node's mask is the union
-        // of all possible upstream paths, not just the runtime-active branch.
+        break :blk @Type(.{ .@"struct" = .{
+            .layout   = .auto,
+            .fields   = &fields,
+            .decls    = &.{},
+            .is_tuple = false,
+        }});
+    };
+
+    const N     = std.meta.fields(FullState).len;
+    const Mask  = std.meta.Int(.unsigned, @max(N, 1));
+    const Field = std.meta.FieldEnum(FullState);
+
+    // ── Entire graph resolved at comptime ─────────────────────────────────────
+    const reach, const order = comptime blk: {
+        @setEvalBranchQuota(1000 + N * N * N * 10);
+
+        // Dep masks: param struct field names are the dependencies.
+        var direct = [_]Mask{0} ** N;
+        for (std.meta.declarations(Spec.compute)) |decl| {
+            const t      = std.meta.fieldIndex(FullState, decl.name) orelse
+                @compileError("compute." ++ decl.name ++ " has no matching field in State");
+            const fn_val = @field(Spec.compute, decl.name);
+            const params = @typeInfo(@TypeOf(fn_val)).@"fn".params;
+            if (params.len != 1)
+                @compileError("compute." ++ decl.name ++ " must take exactly one struct argument");
+            const DepType = params[0].type orelse
+                @compileError("compute." ++ decl.name ++ " parameter must be a concrete type");
+            for (std.meta.fields(DepType)) |df| {
+                const dep = std.meta.fieldIndex(FullState, df.name) orelse
+                    @compileError("dependency '" ++ df.name ++ "' not found in State");
+                direct[t] |= @as(Mask, 1) << @intCast(dep);
+            }
+        }
+
+        // Floyd–Warshall transitive closure.
         var trans = direct;
         for (0..N) |_| for (0..N) |i| for (0..N) |j| {
             if (trans[i] >> @intCast(j) & 1 == 1) trans[i] |= trans[j];
         };
 
-        // Kahn's algorithm: topo sort guarantees deps flush before dependents.
+        // Kahn topological sort.
         var sorted: [N]usize = undefined;
         var placed: Mask = 0;
         var k: usize = 0;
@@ -50,39 +89,42 @@ pub fn Signals(comptime Spec: type) type {
         const Self = @This();
         pub const Dirty = Mask;
 
-        state: Spec.State = .{},
-        dirty: Mask = 0,
+        state: FullState = .{},
+        dirty: Mask      = 0,
 
-        // Equality-checked write; marks bit in dirty mask on change.
-        pub inline fn set(self: *Self, comptime f: Field, v: std.meta.fieldInfo(Spec.State, f).type) void {
+        pub inline fn set(self: *Self, comptime f: Field, v: std.meta.fieldInfo(FullState, f).type) void {
             const ptr = &@field(self.state, @tagName(f));
             if (std.meta.eql(ptr.*, v)) return;
             ptr.* = v;
             self.dirty |= comptime @as(Mask, 1) << @intCast(@intFromEnum(f));
         }
 
-        pub inline fn get(self: *const Self, comptime f: Field) std.meta.fieldInfo(Spec.State, f).type {
+        pub inline fn get(self: *const Self, comptime f: Field) std.meta.fieldInfo(FullState, f).type {
             return @field(self.state, @tagName(f));
         }
 
-        // Unrolled at comptime; each derived node costs one AND + branch at runtime.
-        // Source nodes (reach == 0) are fully eliminated by the compiler.
         pub fn flush(self: *Self) Mask {
             var d = self.dirty;
             if (d == 0) return 0;
             inline for (order) |idx| {
-                const m = comptime reach[idx];
-                if (m != 0 and d & m != 0) {
-                    Spec.update(&self.state, comptime @as(Field, @enumFromInt(idx)));
-                    d |= comptime @as(Mask, 1) << @intCast(idx);
+                const fname = comptime @tagName(@as(Field, @enumFromInt(idx)));
+                if (comptime @hasDecl(Spec.compute, fname)) {
+                    const m = comptime reach[idx];
+                    if (m != 0 and d & m != 0) {
+                        const fn_val  = @field(Spec.compute, fname);
+                        const DepType = @typeInfo(@TypeOf(fn_val)).@"fn".params[0].type.?;
+                        var deps: DepType = undefined;
+                        inline for (std.meta.fields(DepType)) |df|
+                            @field(deps, df.name) = @field(self.state, df.name);
+                        @field(self.state, fname) = fn_val(deps);
+                        d |= comptime @as(Mask, 1) << @intCast(idx);
+                    }
                 }
             }
             self.dirty = 0;
             return d;
         }
 
-        /// Comptime mask: watched fields + all transitive ancestors.
-        /// Use against flush()'s return value for effect dispatch.
         pub fn watch(comptime watched: []const Field) Mask {
             comptime {
                 var m: Mask = 0;

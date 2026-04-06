@@ -3,60 +3,49 @@ const rl    = @import("raylib");
 const react = @import("react");
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Reactive spec
+//  Reactive spec — sources only in State; derived entirely implicit via compute
 // ─────────────────────────────────────────────────────────────────────────────
 const App = react.Signals(struct {
     pub const State = struct {
-        // Sources
-        red:    f32  = 0.47,
-        green:  f32  = 0.78,
-        blue:   f32  = 0.31,
-        count:  i32  = 0,
-        mode:   i32  = 0,   // 0=chill  1=party  2=zen
-        time:   f32  = 0.0,
-        // Derived
-        luminance:   f32  = 0.0,
-        doubled:     i32  = 0,
-        quadrupled:  i32  = 0,
-        is_even:     bool = true,
-        ring_radius: f32  = 60.0,  // over-subscribed: mode + count + luminance
-        bg_shade:    u8   = 18,
-        pulse:       f32  = 0.8,   // over-subscribed: time + mode
+        red:   f32 = 0.47,
+        green: f32 = 0.78,
+        blue:  f32 = 0.31,
+        count: i32 = 0,
+        mode:  i32 = 0,   // 0=chill  1=party  2=zen
+        time:  f32 = 0.0,
     };
 
-    pub const rules = .{
-        .luminance   = .{ .red, .green, .blue },
-        .doubled     = .{ .count },
-        .quadrupled  = .{ .doubled },
-        .is_even     = .{ .count },
-        .ring_radius = .{ .mode, .count, .luminance },
-        .bg_shade    = .{ .luminance },
-        .pulse       = .{ .time, .mode },
-    };
-
-    const F = std.meta.FieldEnum(State);
-
-    pub fn update(s: *State, comptime f: F) void {
-        switch (f) {
-            .luminance   => s.luminance   = 0.2126*s.red + 0.7152*s.green + 0.0722*s.blue,
-            .doubled     => s.doubled     = s.count * 2,
-            .quadrupled  => s.quadrupled  = s.doubled * 2,
-            .is_even     => s.is_even     = @rem(s.count, 2) == 0,
-            .ring_radius => s.ring_radius = switch (s.mode) {
+    pub const compute = struct {
+        pub fn luminance(s: struct { red: f32, green: f32, blue: f32 }) f32 {
+            return 0.2126*s.red + 0.7152*s.green + 0.0722*s.blue;
+        }
+        pub fn doubled(s: struct { count: i32 }) i32 {
+            return s.count * 2;
+        }
+        pub fn quadrupled(s: struct { doubled: i32 }) i32 {
+            return s.doubled * 2;
+        }
+        pub fn is_even(s: struct { count: i32 }) bool {
+            return @rem(s.count, 2) == 0;
+        }
+        pub fn ring_radius(s: struct { mode: i32, count: i32, luminance: f32 }) f32 {
+            return switch (s.mode) {
                 0    => 40.0 + s.luminance * 80.0,
                 1    => 30.0 + @as(f32, @floatFromInt(@mod(s.count, 10))) * 8.0,
                 else => 70.0,
-            },
-            .bg_shade => s.bg_shade = @intFromFloat(
-                std.math.clamp(14.0 + s.luminance * 18.0, 0.0, 255.0)),
-            .pulse => s.pulse = switch (s.mode) {
+            };
+        }
+        pub fn bg_shade(s: struct { luminance: f32 }) u8 {
+            return @intFromFloat(std.math.clamp(14.0 + s.luminance * 18.0, 0.0, 255.0));
+        }
+        pub fn pulse(s: struct { time: f32, mode: i32 }) f32 {
+            return switch (s.mode) {
                 1    => @sin(s.time * 6.0) * 0.5 + 0.5,
                 2    => @sin(s.time * 1.0) * 0.3 + 0.7,
                 else => @sin(s.time * 2.5) * 0.15 + 0.85,
-            },
-            else => {},
+            };
         }
-    }
+    };
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,7 +53,6 @@ const App = react.Signals(struct {
 // ─────────────────────────────────────────────────────────────────────────────
 const N_SIG = 13;
 const N_SRC = 6;
-
 const SIG_NAMES = [N_SIG][:0]const u8{
     "red","grn","blu","cnt","mod","time",
     "lum","x2","x4","evn","ring","bg","pls",
@@ -114,7 +102,6 @@ fn toColor(r: f32, g: f32, b: f32) rl.Color {
         .a = 255,
     };
 }
-
 fn z(buf: []u8, comptime fmt: []const u8, args: anytype) [:0]const u8 {
     return std.fmt.bufPrintZ(buf, fmt, args) catch "";
 }
@@ -131,6 +118,7 @@ pub fn main() void {
     var drag: i32 = -1;
     var elapsed: f32 = 0;
 
+    // Force a full flush on startup so all derived fields are initialised.
     ui.dirty = std.math.maxInt(App.Dirty);
     _ = ui.flush();
 
@@ -186,7 +174,6 @@ pub fn main() void {
         defer rl.endDrawing();
 
         var b: [64]u8 = undefined;
-
         const bg = ui.get(.bg_shade);
         rl.clearBackground(.{ .r=bg, .g=bg, .b=bg+|8, .a=255 });
 
@@ -217,7 +204,6 @@ pub fn main() void {
             rl.drawCircleV(v2(SX+fw, sy+SH*0.5), SH*0.3, WHITE);
             rl.drawText(z(&b, "{d:.0}", .{val*255}), 290, fi(sy-1), 13, DIM);
         }
-
         rl.drawRectangleRounded(rc(40,238,120,22), 0.3, 6, swatch);
         rl.drawText(z(&b, "L = {d:.2}", .{ui.get(.luminance)}), 178, 240, 16,
             if (ui.get(.luminance) > 0.5) BG_DARK else WHITE);
@@ -225,13 +211,11 @@ pub fn main() void {
         // ── Counter ───────────────────────────────────────────────────────────
         rl.drawRectangleRounded(rc(340,68,260,260), 0.04, 8, PANEL);
         rl.drawText("COUNTER", 356, 82, 14, DIM);
-
         {
             const t  = z(&b, "{d}", .{ui.get(.count)});
             const tw = rl.measureText(t, 44);
             rl.drawText(t, 470 - @divTrunc(tw, 2), 108, 44, WHITE);
         }
-
         inline for (.{ .{@as(f32,368), "-"}, .{@as(f32,538), "+"} }) |btn| {
             const bx  = btn[0];
             const hov = hit(ms, bx, 162, 54, 36);
@@ -240,7 +224,6 @@ pub fn main() void {
                 rl.fade(ACCENT, if (hov) @as(f32,0.3) else @as(f32,0.08)));
             rl.drawText(btn[1], fi(bx+18), 167, 26, TXT);
         }
-
         rl.drawText(z(&b, "x2 = {d}", .{ui.get(.doubled)}),    370, 215, 20, ACCENT);
         rl.drawText(z(&b, "x4 = {d}", .{ui.get(.quadrupled)}), 370, 240, 20, ACCENT);
         rl.drawText(if (ui.get(.is_even)) "even" else "odd",   370, 272, 18,
@@ -291,7 +274,6 @@ pub fn main() void {
                 fi(mx + (90.0 - @as(f32,@floatFromInt(tw))) * 0.5),
                 fi(375), 16, if (sel) BG_DARK else DIM);
         }
-
         {
             const desc: [:0]const u8 = switch (cur) {
                 0    => "ring = f(luminance)    pulse = gentle",
@@ -305,7 +287,6 @@ pub fn main() void {
         const SGY: f32 = 418;
         rl.drawRectangleRounded(rc(20,SGY,1060,262), 0.03, 8, PANEL);
         rl.drawText("SIGNAL PROPAGATION", 36, fi(SGY+12), 14, DIM);
-        // ↓ THE FIX: "{b:0>13}" not "{:0>13b}" — type before colon, options after
         rl.drawText(z(&b, "dirty  0b{b:0>13}", .{@as(u16,@intCast(dirty))}),
             840, fi(SGY+12), 12, rl.fade(ACCENT, 0.5));
         rl.drawText(z(&b, "{d}/{d} propagated", .{@popCount(dirty), N_SIG}),
