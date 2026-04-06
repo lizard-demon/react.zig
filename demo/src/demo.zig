@@ -1,332 +1,175 @@
-const std   = @import("std");
-const rl    = @import("raylib");
+const std = @import("std");
+const rl   = @import("raylib");
 const react = @import("react");
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Reactive spec
+//  Reactive Spec
+//  All spatial math lives here. flush() recomputes only what changed.
 // ─────────────────────────────────────────────────────────────────────────────
 const App = react.Signals(struct {
     pub const State = struct {
-        red:   f32 = 0.47,
-        green: f32 = 0.78,
-        blue:  f32 = 0.31,
-        count: i32 = 0,
-        mode:  i32 = 0,   // 0=chill  1=party  2=zen
-        time:  f32 = 0.0,
+        mx:        i32 = 0,
+        my:        i32 = 0,
+        depth:     i32 = 5,
+        max_depth: i32 = 8,   // 2^8 = 256 px canvas side
     };
+
     pub const compute = struct {
-        pub fn luminance(s: struct { red: f32, green: f32, blue: f32 }) f32 {
-            return 0.2126*s.red + 0.7152*s.green + 0.0722*s.blue;
+        pub fn brush_px(s: struct { max_depth: i32, depth: i32 }) i32 {
+            return @as(i32, 1) << @intCast(s.max_depth - s.depth);
         }
-        pub fn doubled(s: struct { count: i32 }) i32 { return s.count * 2; }
-        pub fn quadrupled(s: struct { doubled: i32 }) i32 { return s.doubled * 2; }
-        pub fn is_even(s: struct { count: i32 }) bool { return @rem(s.count, 2) == 0; }
-        pub fn ring_radius(s: struct { mode: i32, count: i32, luminance: f32 }) f32 {
-            return switch (s.mode) {
-                0    => 40.0 + s.luminance * 80.0,
-                1    => 30.0 + @as(f32, @floatFromInt(@mod(s.count, 10))) * 8.0,
-                else => 70.0,
-            };
+
+        pub fn cell_x(s: struct { mx: i32, brush_px: i32, depth: i32 }) i32 {
+            const max = (@as(i32, 1) << @intCast(s.depth)) - 1;
+            return std.math.clamp(@divTrunc(s.mx, s.brush_px), 0, max);
         }
-        pub fn bg_shade(s: struct { luminance: f32 }) u8 {
-            return @intFromFloat(std.math.clamp(14.0 + s.luminance * 18.0, 0.0, 255.0));
+
+        pub fn cell_y(s: struct { my: i32, brush_px: i32, depth: i32 }) i32 {
+            const max = (@as(i32, 1) << @intCast(s.depth)) - 1;
+            return std.math.clamp(@divTrunc(s.my, s.brush_px), 0, max);
         }
-        pub fn pulse(s: struct { time: f32, mode: i32 }) f32 {
-            return switch (s.mode) {
-                1    => @sin(s.time * 6.0) * 0.5 + 0.5,
-                2    => @sin(s.time * 1.0) * 0.3 + 0.7,
-                else => @sin(s.time * 2.5) * 0.15 + 0.85,
-            };
+
+        // Morton index is display-only info; still reactive, zero cost when
+        // cell_x/cell_y haven't changed.
+        pub fn morton_index(s: struct { cell_x: i32, cell_y: i32 }) u32 {
+            return morton2D(@intCast(s.cell_x), @intCast(s.cell_y));
         }
     };
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Signal graph viz data
-// ─────────────────────────────────────────────────────────────────────────────
-const N_SIG = 13;
-const N_SRC = 6;
-const SIG_NAMES = [N_SIG][:0]const u8{
-    "red","grn","blu","cnt","mod","time",
-    "lum","x2","x4","evn","ring","bg","pls",
-};
-const SIG_ROW = [N_SIG]u1{ 0,0,0,0,0,0, 1,1,1,1,1,1,1 };
-const SIG_X   = [N_SIG]f32{
-     80,170,260,420,580,750,
-    170,380,460,540,660,800,940,
-};
-const EDGES = [_][2]u8{
-    .{0,6}, .{1,6},  .{2,6},
-    .{3,7}, .{7,8},  .{3,9},
-    .{4,10},.{3,10}, .{6,10},
-    .{6,11},.{5,12}, .{4,12},
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Theme
-// ─────────────────────────────────────────────────────────────────────────────
-fn rgb(r: u8, g: u8, b: u8) rl.Color { return .{ .r=r, .g=g, .b=b, .a=255 }; }
-
-const PANEL   = rgb(26,  28,  38 );
-const PANEL2  = rgb(38,  42,  58 );
-const TXT     = rgb(200, 210, 230);
-const DIM     = rgb(80,  90,  110);
-const ACCENT  = rgb(80,  170, 255);
-const C_R     = rgb(240, 70,  70 );
-const C_G     = rgb(70,  210, 110);
-const C_Y     = rgb(255, 210, 60 );
-const WHITE   = rgb(255, 255, 255);
-const BG_DARK = rgb(12,  12,  18 );
-const C_B     = rgb(70,  130, 255);
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-fn v2(x: f32, y: f32) rl.Vector2    { return .{ .x=x, .y=y }; }
-fn rc(x: f32, y: f32, w: f32, h: f32) rl.Rectangle { return .{ .x=x, .y=y, .width=w, .height=h }; }
-fn fi(v: f32) c_int                 { return @intFromFloat(v); }
-fn hit(m: rl.Vector2, x: f32, y: f32, w: f32, h: f32) bool {
-    return m.x>=x and m.x<=x+w and m.y>=y and m.y<=y+h;
+// Morton (Z-Order) encode — used only for the UI readout now, not per-pixel.
+inline fn part1By1(x_in: u32) u32 {
+    var x = x_in & 0x0000_ffff;
+    x = (x | (x <<  8)) & 0x00FF_00FF;
+    x = (x | (x <<  4)) & 0x0F0F_0F0F;
+    x = (x | (x <<  2)) & 0x3333_3333;
+    x = (x | (x <<  1)) & 0x5555_5555;
+    return x;
 }
-fn toColor(r: f32, g: f32, b: f32) rl.Color {
-    return .{
-        .r = @intFromFloat(std.math.clamp(r*255, 0, 255)),
-        .g = @intFromFloat(std.math.clamp(g*255, 0, 255)),
-        .b = @intFromFloat(std.math.clamp(b*255, 0, 255)),
-        .a = 255,
-    };
-}
-fn z(buf: []u8, comptime fmt: []const u8, args: anytype) [:0]const u8 {
-    return std.fmt.bufPrintZ(buf, fmt, args) catch "";
+inline fn morton2D(x: u32, y: u32) u32 {
+    return part1By1(x) | (part1By1(y) << 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Main
 // ─────────────────────────────────────────────────────────────────────────────
 pub fn main() void {
-    rl.initWindow(1100, 700, "Comptime Reactive Signals");
+    const CANVAS_DIM   = 256;
+    const CANVAS_SCALE = 2;
+    const CANVAS_X     = 20;
+    const CANVAS_Y     = 44;
+
+    rl.initWindow(800, 600, "Morton Quadtree Painter");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
 
-    var ui: App   = .{};
-    var drag: i32 = -1;
-    var elapsed: f32 = 0;
+    // Single pixel buffer in row-major order.  No z_buffer needed.
+    // We paint directly as rectangles; Morton is kept for the UI readout only.
+    var pixels = [_]rl.Color{rl.Color.black} ** (CANVAS_DIM * CANVAS_DIM);
 
-    // Force full flush on startup so all derived fields are initialised.
+    const img = rl.Image{
+        .data    = &pixels,
+        .width   = CANVAS_DIM,
+        .height  = CANVAS_DIM,
+        .mipmaps = 1,
+        .format  = .uncompressed_r8g8b8a8,
+    };
+    const texture = rl.loadTextureFromImage(img) catch unreachable;
+    defer rl.unloadTexture(texture);
+
+    var ui: App = .{};
     ui.dirty = std.math.maxInt(App.Dirty);
     _ = ui.flush();
 
-    const SX: f32  = 75;
-    const SW: f32  = 205;
-    const SH: f32  = 14;
-    const SY        = [3]f32{ 118, 160, 202 };
-
-    const Slider = struct { label: [:0]const u8, col: rl.Color };
-    const sliders = [3]Slider{
-        .{ .label="R", .col=C_R },
-        .{ .label="G", .col=C_G },
-        .{ .label="B", .col=C_B },
-    };
-
-    const Button = struct { x: f32, label: [:0]const u8 };
-    const buttons = [2]Button{ .{ .x=368, .label="-" }, .{ .x=538, .label="+" } };
-
-    const Mode = struct { name: [:0]const u8, col: rl.Color, desc: [:0]const u8 };
-    const modes = [3]Mode{
-        .{ .name="Chill", .col=ACCENT, .desc="ring = f(luminance)    pulse = gentle" },
-        .{ .name="Party", .col=C_Y,    .desc="ring = f(count % 10)   pulse = fast"   },
-        .{ .name="Zen",   .col=C_G,    .desc="ring = 70 constant     pulse = breathe"},
-    };
+    var active_color = rl.Color.ray_white;
+    var canvas_dirty = false;   // only upload to GPU when something was drawn
+    var scratch: [128]u8 = undefined;
 
     while (!rl.windowShouldClose()) {
-        elapsed += rl.getFrameTime();
+        // ── Input ─────────────────────────────────────────────────────────
         const ms = rl.getMousePosition();
-        const md = rl.isMouseButtonDown(.left);
-        const mp = rl.isMouseButtonPressed(.left);
+        ui.set(.mx, @intFromFloat((ms.x - CANVAS_X) / CANVAS_SCALE));
+        ui.set(.my, @intFromFloat((ms.y - CANVAS_Y) / CANVAS_SCALE));
 
-        // ── Input ─────────────────────────────────────────────────────────────
-        ui.set(.time, elapsed);
-
-        if (!md) {
-            drag = -1;
-        } else for (0..3) |si| {
-            const sid: i32 = @intCast(si);
-            const sy = SY[si];
-            if (drag == sid or (drag == -1 and
-                    ms.x >= SX-8 and ms.x <= SX+SW+8 and
-                    ms.y >= sy-12 and ms.y <= sy+SH+12)) {
-                drag = sid;
-                const val = std.math.clamp((ms.x - SX) / SW, 0.0, 1.0);
-                if (si == 0) ui.set(.red,   val);
-                if (si == 1) ui.set(.green, val);
-                if (si == 2) ui.set(.blue,  val);
-                break;
-            }
+        const wheel = rl.getMouseWheelMove();
+        if (wheel != 0) {
+            const new_depth = ui.get(.depth) + @as(i32, @intFromFloat(wheel));
+            ui.set(.depth, std.math.clamp(new_depth, 0, ui.get(.max_depth)));
         }
 
-        if (mp and hit(ms,368,162,54,36)) ui.set(.count, ui.get(.count) - 1);
-        if (mp and hit(ms,538,162,54,36)) ui.set(.count, ui.get(.count) + 1);
-        if (rl.isKeyPressed(.up))         ui.set(.count, ui.get(.count) + 1);
-        if (rl.isKeyPressed(.down))       ui.set(.count, ui.get(.count) - 1);
+        if (rl.isKeyPressed(.one))   active_color = rl.Color.ray_white;
+        if (rl.isKeyPressed(.two))   active_color = rl.Color.red;
+        if (rl.isKeyPressed(.three)) active_color = rl.Color.green;
+        if (rl.isKeyPressed(.four))  active_color = rl.Color.blue;
 
-        for (0..3) |mi| {
-            const mx = 30.0 + @as(f32, @floatFromInt(mi)) * 110.0;
-            if (mp and hit(ms, mx, 368, 90, 30)) ui.set(.mode, @intCast(mi));
+        // ── Reactive flush ────────────────────────────────────────────────
+        _ = ui.flush();
+
+        // ── Paint (only when mouse is down inside canvas) ─────────────────
+        const in_bounds =
+            ms.x >= CANVAS_X and ms.x < CANVAS_X + (CANVAS_DIM * CANVAS_SCALE) and
+            ms.y >= CANVAS_Y and ms.y < CANVAS_Y + (CANVAS_DIM * CANVAS_SCALE);
+
+        if (in_bounds and rl.isMouseButtonDown(.left)) {
+            const cx: usize = @intCast(ui.get(.cell_x));
+            const cy: usize = @intCast(ui.get(.cell_y));
+            const bp: usize = @intCast(ui.get(.brush_px));
+
+            // Fill the quad's pixel rectangle directly — no morton decode loop.
+            // Complexity: O(brush_px²) rather than O(CANVAS_DIM²) every frame.
+            for (cy * bp .. (cy + 1) * bp) |py|
+                @memset(pixels[py * CANVAS_DIM + cx * bp ..][0..bp], active_color);
+
+            canvas_dirty = true;
         }
-        if (rl.isKeyPressed(.one))   ui.set(.mode, 0);
-        if (rl.isKeyPressed(.two))   ui.set(.mode, 1);
-        if (rl.isKeyPressed(.three)) ui.set(.mode, 2);
 
-        // ── Flush ─────────────────────────────────────────────────────────────
-        const dirty = ui.flush();
+        // ── GPU upload only when canvas changed ───────────────────────────
+        if (canvas_dirty) {
+            rl.updateTexture(texture, &pixels);
+            canvas_dirty = false;
+        }
 
-        // ── Draw ──────────────────────────────────────────────────────────────
+        // ── Draw ──────────────────────────────────────────────────────────
         rl.beginDrawing();
         defer rl.endDrawing();
 
-        var scratch: [64]u8 = undefined;
-        const bg = ui.get(.bg_shade);
-        rl.clearBackground(.{ .r=bg, .g=bg, .b=bg+|8, .a=255 });
+        rl.clearBackground(.{ .r = 18, .g = 18, .b = 24, .a = 255 });
 
-        const swatch = toColor(ui.get(.red), ui.get(.green), ui.get(.blue));
+        rl.drawTextureEx(texture, .{ .x = CANVAS_X, .y = CANVAS_Y },
+            0, CANVAS_SCALE, rl.Color.white);
+        rl.drawRectangleLines(
+            CANVAS_X - 1, CANVAS_Y - 1,
+            (CANVAS_DIM * CANVAS_SCALE) + 2, (CANVAS_DIM * CANVAS_SCALE) + 2,
+            rl.Color.dark_gray);
 
-        // Title bar
-        rl.drawRectangle(0, 0, 1100, 48, BG_DARK);
-        rl.drawText("COMPTIME REACTIVE SIGNALS", 16, 14, 20, ACCENT);
-        rl.drawText(z(&scratch, "{d} fps", .{rl.getFPS()}), 1024, 16, 16, DIM);
-
-        // ── Color Mixer ───────────────────────────────────────────────────────
-        rl.drawRectangleRounded(rc(20,68,300,260), 0.04, 8, PANEL);
-        rl.drawText("COLOR MIXER", 36, 82, 14, DIM);
-
-        const sval = [3]f32{ ui.get(.red), ui.get(.green), ui.get(.blue) };
-        for (sliders, 0..) |sl, si| {
-            const sy  = SY[si];
-            const val = sval[si];
-            rl.drawText(sl.label, 42, fi(sy-2), 16, sl.col);
-            rl.drawRectangleRounded(rc(SX,sy,SW,SH), 0.5, 6, rgb(18,20,28));
-            const fw = val * SW;
-            if (fw > 1) rl.drawRectangleRounded(rc(SX,sy,fw,SH), 0.5, 6, rl.fade(sl.col, 0.65));
-            rl.drawCircleV(v2(SX+fw, sy+SH*0.5), SH*0.7, sl.col);
-            rl.drawCircleV(v2(SX+fw, sy+SH*0.5), SH*0.3, WHITE);
-            rl.drawText(z(&scratch, "{d:.0}", .{val*255}), 290, fi(sy-1), 13, DIM);
-        }
-        rl.drawRectangleRounded(rc(40,238,120,22), 0.3, 6, swatch);
-        rl.drawText(z(&scratch, "L = {d:.2}", .{ui.get(.luminance)}), 178, 240, 16,
-            if (ui.get(.luminance) > 0.5) BG_DARK else WHITE);
-
-        // ── Counter ───────────────────────────────────────────────────────────
-        rl.drawRectangleRounded(rc(340,68,260,260), 0.04, 8, PANEL);
-        rl.drawText("COUNTER", 356, 82, 14, DIM);
-        {
-            const t  = z(&scratch, "{d}", .{ui.get(.count)});
-            const tw = rl.measureText(t, 44);
-            rl.drawText(t, 470 - @divTrunc(tw, 2), 108, 44, WHITE);
+        // Brush preview rectangle
+        if (in_bounds) {
+            const bx = CANVAS_X + (ui.get(.cell_x) * ui.get(.brush_px) * CANVAS_SCALE);
+            const by = CANVAS_Y + (ui.get(.cell_y) * ui.get(.brush_px) * CANVAS_SCALE);
+            const bw = ui.get(.brush_px) * CANVAS_SCALE;
+            rl.drawRectangleLinesEx(
+                .{ .x = @floatFromInt(bx), .y = @floatFromInt(by),
+                   .width = @floatFromInt(bw), .height = @floatFromInt(bw) },
+                2.0, rl.Color.yellow);
         }
 
-        for (buttons) |btn| {
-            const hov = hit(ms, btn.x, 162, 54, 36);
-            rl.drawRectangleRounded(rc(btn.x,162,54,36), 0.3, 6, if (hov) PANEL2 else PANEL);
-            rl.drawRectangleRounded(rc(btn.x,162,54,36), 0.3, 6,
-                rl.fade(ACCENT, if (hov) @as(f32,0.3) else @as(f32,0.08)));
-            rl.drawText(btn.label, fi(btn.x+18), 167, 26, TXT);
-        }
-
-        rl.drawText(z(&scratch, "x2 = {d}", .{ui.get(.doubled)}),    370, 215, 20, ACCENT);
-        rl.drawText(z(&scratch, "x4 = {d}", .{ui.get(.quadrupled)}), 370, 240, 20, ACCENT);
-        rl.drawText(if (ui.get(.is_even)) "even" else "odd",          370, 272, 18,
-            if (ui.get(.is_even)) C_G else C_R);
-
-        // ── Reactive Ring ─────────────────────────────────────────────────────
-        rl.drawRectangleRounded(rc(620,68,460,260), 0.04, 8, PANEL);
-        rl.drawText("REACTIVE RING",     636, 82, 14, DIM);
-        rl.drawText("(over-subscribed)", 776, 83, 11, rl.fade(C_Y, 0.5));
-
-        const RCX: f32 = 850;
-        const RCY: f32 = 200;
-        const ring_r   = ui.get(.ring_radius);
-        const pls      = ui.get(.pulse);
-
-        for (0..6) |ri| {
-            const f = @as(f32, @floatFromInt(ri));
-            const r = @min(ring_r, 100.0) * 0.25 + f * 14.0;
-            rl.drawRing(v2(RCX,RCY), r-1.5, r+1.5, 0, 360, 48,
-                rl.fade(swatch, std.math.clamp(pls * (1.0 - f*0.14), 0.06, 1.0)));
-        }
-        for (0..8) |di| {
-            const ang = elapsed*1.2 + @as(f32,@floatFromInt(di)) * std.math.pi*0.25;
-            const orb = @min(ring_r, 100.0) * 0.25 + 42.0;
-            rl.drawCircleV(v2(RCX+@cos(ang)*orb, RCY+@sin(ang)*orb), 2.5,
-                rl.fade(swatch, pls*0.5));
-        }
-        rl.drawCircleV(v2(RCX,RCY), 6.0*pls, rl.fade(swatch, pls*0.7));
-        rl.drawCircleV(v2(RCX,RCY), 3, WHITE);
-        rl.drawText(z(&scratch, "r = {d:.0}", .{ring_r}), fi(RCX-16), fi(RCY+90), 13, DIM);
-
-        // ── Mode Selector ─────────────────────────────────────────────────────
-        rl.drawRectangleRounded(rc(20,340,1060,66), 0.03, 8, PANEL);
-        rl.drawText("MODE", 36, 353, 14, DIM);
-
-        const cur: usize = @intCast(ui.get(.mode));
-        for (modes, 0..) |m, mi| {
-            const mx  = 30.0 + @as(f32,@floatFromInt(mi)) * 110.0;
-            const sel = mi == cur;
-            const hov = hit(ms, mx, 368, 90, 30);
-            rl.drawRectangleRounded(rc(mx,368,90,30), 0.3, 6,
-                if (sel) m.col else if (hov) PANEL2 else rl.fade(PANEL2, 0.5));
-            const tw = rl.measureText(m.name, 16);
-            rl.drawText(m.name,
-                fi(mx + (90.0 - @as(f32,@floatFromInt(tw))) * 0.5),
-                375, 16, if (sel) BG_DARK else DIM);
-        }
-        rl.drawText(modes[cur].desc, 370, 378, 13, rl.fade(modes[cur].col, 0.6));
-
-        // ── Signal Propagation Graph ──────────────────────────────────────────
-        const SGY: f32 = 418;
-        rl.drawRectangleRounded(rc(20,SGY,1060,262), 0.03, 8, PANEL);
-        rl.drawText("SIGNAL PROPAGATION", 36, fi(SGY+12), 14, DIM);
-        rl.drawText(z(&scratch, "dirty  0b{b:0>13}", .{@as(u16,@intCast(dirty))}),
-            840, fi(SGY+12), 12, rl.fade(ACCENT, 0.5));
-        rl.drawText(z(&scratch, "{d}/{d} propagated", .{@popCount(dirty), N_SIG}),
-            680, fi(SGY+12), 12, DIM);
-
-        const ROW_Y = [2]f32{ SGY+55, SGY+135 };
-
-        for (EDGES) |edge| {
-            const x1   = SIG_X[edge[0]];
-            const y1   = ROW_Y[SIG_ROW[edge[0]]];
-            const x2   = SIG_X[edge[1]];
-            const y2   = ROW_Y[SIG_ROW[edge[1]]];
-            const live = dirty & (@as(App.Dirty,1) << @intCast(edge[0])) != 0;
-            const col  = if (live) rl.fade(ACCENT, 0.35) else rl.fade(DIM, 0.12);
-            const th: f32 = if (live) 2.0 else 1.0;
-            if (SIG_ROW[edge[0]] == SIG_ROW[edge[1]]) {
-                const mx = (x1+x2)*0.5;
-                const my = y1+28;
-                rl.drawLineEx(v2(x1,y1+8), v2(mx,my),   th, col);
-                rl.drawLineEx(v2(mx,my),   v2(x2,y2+8), th, col);
-            } else {
-                rl.drawLineEx(v2(x1,y1+8), v2(x2,y2-8), th, col);
-            }
-        }
-
-        for (0..N_SIG) |i| {
-            const dx  = SIG_X[i];
-            const dy  = ROW_Y[SIG_ROW[i]];
-            const on  = dirty & (@as(App.Dirty,1) << @intCast(i)) != 0;
-            const col = if (i < N_SRC) ACCENT else C_G;
-            if (on) {
-                rl.drawCircleV(v2(dx,dy), 9, rl.fade(col, 0.2));
-                rl.drawCircleV(v2(dx,dy), 5, col);
-            } else {
-                rl.drawRing(v2(dx,dy), 3, 5, 0, 360, 16, rl.fade(col, 0.25));
-            }
-            rl.drawText(SIG_NAMES[i], fi(dx-10), fi(dy+12), 11, if (on) TXT else DIM);
-        }
-
-        rl.drawText("over-sub", fi(SIG_X[10]-16), fi(ROW_Y[1]+28), 10, rl.fade(C_Y,0.4));
-        rl.drawText("over-sub", fi(SIG_X[12]-16), fi(ROW_Y[1]+28), 10, rl.fade(C_Y,0.4));
-        rl.drawText("UP/DOWN  count    1/2/3  mode    drag  sliders",
-            36, 668, 12, rl.fade(DIM, 0.4));
+        // HUD
+        rl.drawText("LINEAR QUADTREE PAINTER", 560, 44, 10, rl.Color.gray);
+        rl.drawText(
+            std.fmt.bufPrintZ(&scratch, "Depth: {d} / {d}",
+                .{ ui.get(.depth), ui.get(.max_depth) }) catch "",
+            560, 64, 20, rl.Color.ray_white);
+        rl.drawText(
+            std.fmt.bufPrintZ(&scratch, "Brush: {d}px",
+                .{ui.get(.brush_px)}) catch "",
+            560, 94, 20, rl.Color.ray_white);
+        rl.drawText(
+            std.fmt.bufPrintZ(&scratch, "Morton: {d}",
+                .{ui.get(.morton_index)}) catch "",
+            560, 124, 20, rl.Color.ray_white);
+        rl.drawText("CONTROLS", 560, 220, 10, rl.Color.gray);
+        rl.drawText("L-Click: Paint Quad",   560, 240, 16, rl.Color.light_gray);
+        rl.drawText("Scroll: Change Depth",  560, 260, 16, rl.Color.light_gray);
+        rl.drawText("1-4: Change Color",     560, 280, 16, rl.Color.light_gray);
     }
 }
