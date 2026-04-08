@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub fn Signals(comptime spec: type) type {
 
+    // Extract Fields
     const State = blk: {
         const S = std.meta.fields(spec.State);
         const D = std.meta.declarations(spec.compute);
@@ -19,28 +20,34 @@ pub fn Signals(comptime spec: type) type {
         break :blk @Type(.{ .@"struct" = .{ .layout = .auto, .fields = &fields, .decls = &.{}, .is_tuple = false } });
     };
 
+    // Generate Field Enum
     const Tag = std.meta.FieldEnum(State);
 
+    // Create DAG
     const Graph = blk: {
         const fields = std.meta.fields(State);
         const decls = std.meta.declarations(spec.compute);
         @setEvalBranchQuota(1000 + (fields.len * fields.len * decls.len * 10));
 
+        // Bitmask Map
         const Mask = std.StaticBitSet(fields.len);
         var direct = [_]Mask{Mask.initEmpty()} ** fields.len;
         var reach = [_]Mask{Mask.initEmpty()} ** fields.len;
 
+        // Corrilate function paramiters with fields
         for (decls) |decl| {
             const idx = std.meta.fieldIndex(State, decl.name).?;
             const Params = @typeInfo(@TypeOf(@field(spec.compute, decl.name))).@"fn".params[0].type.?;
             inline for (std.meta.fields(Params)) |p| direct[idx].set(std.meta.fieldIndex(State, p.name).?);
         }
 
+        // Marks non-function fields as "visited"
         var visited = Mask.initEmpty();
         inline for (std.meta.fields(spec.State)) |f| {
             visited.set(std.meta.fieldIndex(State, f.name).?);
         }
 
+        // Create DAG, treating above "visited" fields as roots.
         var order: [decls.len]usize = undefined;
         for (0..decls.len) |i| {
             for (0..fields.len) |n| {
@@ -59,50 +66,62 @@ pub fn Signals(comptime spec: type) type {
                 }
             } else @compileError("Cycle or missing source detected");
         }
-
         break :blk .{ .Mask = Mask, .direct = direct, .reach = reach, .order = order };
     };
 
+    // Return -> Graph + API
     return struct {
         const Self = @This();
         pub const Mask = Graph.Mask;
 
         state: State = .{},
-        dirty: Mask = Mask.initEmpty(),
+        dirty: Mask = Mask.initEmpty(), // dirty field bitmask
 
+        // Field Access
         pub fn set(self: *Self, comptime tag: Tag, val: std.meta.fieldInfo(State, tag).type) void {
-            if (std.meta.eql(@field(self.state, @tagName(tag)), val)) return;
+            if (std.meta.eql(@field(self.state, @tagName(tag)), val)) return; // no change = early exit
             @field(self.state, @tagName(tag)) = val;
-            self.dirty.set(@intFromEnum(tag));
+            self.dirty.set(@intFromEnum(tag)); // mark dirty field
         }
-
         pub fn get(self: *const Self, comptime tag: Tag) std.meta.fieldInfo(State, tag).type {
             return @field(self.state, @tagName(tag));
         }
 
+        // Resolve Dirty Graph
         pub fn flush(self: *Self) Mask {
-            if (self.dirty.count() == 0) return self.dirty;
+            if (self.dirty.count() == 0) return self.dirty; // Early Exit
             var out = self.dirty;
 
+            // Follow Graph From Root
             inline for (Graph.order) |idx| {
 
+                // Execute Dirty Deps
                 var intersection = Graph.direct[idx];
-                intersection.setIntersection(out);
+                intersection.setIntersection(out); // dirty check
                 if (intersection.count() != 0) {
 
+                    // Build Functin Call
                     const name = @tagName(@as(Tag, @enumFromInt(idx)));
                     const func = @field(spec.compute, name);
                     const Args = @typeInfo(@TypeOf(func)).@"fn".params[0].type.?;
                     var args: Args = undefined;
                     inline for (std.meta.fields(Args)) |f| @field(args, f.name) = @field(self.state, f.name);
+
+                    // Call and return to field
                     @field(self.state, name) = func(args);
+
+                    // Recursively mark dirty
                     out.set(idx);
                 }
             }
+
+            // Clear Mask
             self.dirty = Mask.initEmpty();
+
             return out;
         }
 
+        // Calculate transitive deps of field at comptime
         pub fn watch(comptime viewed: []const Tag) Mask {
             var m = Mask.initEmpty();
             for (viewed) |t| {
