@@ -39,30 +39,43 @@ const ring_cap : usize = 16;
 // ── Reactive State ────────────────────────────────────────────────────────────
 
 const Ui = react.Signals(struct {
-    pub const State = struct {
-        page: i32 = 2,
-        size: i32 = 3,
-        tool: i32 = 0,
-        stab: i32 = 6,
-    };
-    pub const compute = struct {
-        pub fn cols (s: struct { page: i32          }) i32 { return pages[@intCast(s.page)].w; }
-        pub fn rows (s: struct { page: i32          }) i32 { return pages[@intCast(s.page)].h; }
-        pub fn scale(s: struct { cols: i32, rows: i32 }) f32 {
-            return @as(f32, @floatFromInt(vp)) / @as(f32, @floatFromInt(@max(s.cols, s.rows)));
-        }
-        pub fn span(s: struct { cols: i32, scale: f32 }) i32 {
-            return @intFromFloat(@as(f32, @floatFromInt(s.cols)) * s.scale);
-        }
-        pub fn rise(s: struct { rows: i32, scale: f32 }) i32 {
-            return @intFromFloat(@as(f32, @floatFromInt(s.rows)) * s.scale);
-        }
-        pub fn ox(s: struct { span: i32 }) i32 { return pad + @divTrunc(vp - s.span, 2); }
-        pub fn oy(s: struct { rise: i32 }) i32 { return pad + @divTrunc(vp - s.rise, 2); }
-        pub fn cur(s: struct { size: i32, scale: f32 }) f32 {
-            return @as(f32, @floatFromInt(s.size)) * s.scale;
-        }
-    };
+
+    page: i32 = 2,
+    size: i32 = 3,
+    tool: i32 = 0,
+    stab: i32 = 6,
+
+    pub fn cols (s: struct { page: i32 }) i32 {
+        return pages[@intCast(s.page)].w;
+    }
+
+    pub fn rows (s: struct { page: i32 }) i32 {
+        return pages[@intCast(s.page)].h;
+    }
+
+    pub fn scale(s: struct { cols: i32, rows: i32 }) f32 {
+        return @as(f32, @floatFromInt(vp)) / @as(f32, @floatFromInt(@max(s.cols, s.rows)));
+    }
+
+    pub fn span(s: struct { cols: i32, scale: f32 }) i32 {
+        return @intFromFloat(@as(f32, @floatFromInt(s.cols)) * s.scale);
+    }
+
+    pub fn rise(s: struct { rows: i32, scale: f32 }) i32 {
+        return @intFromFloat(@as(f32, @floatFromInt(s.rows)) * s.scale);
+    }
+
+    pub fn ox(s: struct { span: i32 }) i32 {
+        return pad + @divTrunc(vp - s.span, 2);
+    }
+
+    pub fn oy(s: struct { rise: i32 }) i32 {
+        return pad + @divTrunc(vp - s.rise, 2);
+    }
+
+    pub fn cur(s: struct { size: i32, scale: f32 }) f32 {
+        return @as(f32, @floatFromInt(s.size)) * s.scale;
+    }
 });
 
 // ── Draw Primitives ───────────────────────────────────────────────────────────
