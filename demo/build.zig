@@ -4,18 +4,24 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const sdl3 = b.dependency("sdl3", .{
+        .target = target,
+        .optimize = optimize,
+        
+        // Enable all major SDL extensions
+        .ext_image = true,
+        .ext_net = true,
+        .ext_ttf = true,
+        .main = true, 
+
+        // Static linkage
+        .c_sdl_preferred_linkage = .static,
+    });
+
     const react_dep = b.dependency("react_zig", .{
         .target = target,
         .optimize = optimize,
     });
-
-    const raylib_dep = b.dependency("raylib_zig", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const raylib = raylib_dep.module("raylib");
-    const raygui = raylib_dep.module("raygui");
-    const raylib_artifact = raylib_dep.artifact("raylib");
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/demo.zig"),
@@ -23,8 +29,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "react", .module = react_dep.module("react_zig") },
-            .{ .name = "raylib", .module = raylib },
-            .{ .name = "raygui", .module = raygui },
+            .{ .name = "sdl3", .module = sdl3.module("sdl3") },
         },
     });
 
@@ -32,8 +37,6 @@ pub fn build(b: *std.Build) void {
         .name = "ui_test",
         .root_module = mod,
     });
-    
-    exe.root_module.linkLibrary(raylib_artifact);
 
     b.installArtifact(exe);
 

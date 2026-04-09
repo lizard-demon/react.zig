@@ -47,7 +47,7 @@ pub fn Signals(comptime spec: type) type {
             visited.set(std.meta.fieldIndex(State, f.name).?);
         }
 
-        // Create DAG, treating above "visited" fields as roots.
+        // Create DAG, recursively traversing from "visited" fields.
         var order: [decls.len]usize = undefined;
         for (0..decls.len) |i| {
             for (0..fields.len) |n| {

@@ -9,6 +9,10 @@
             .url = "git+https://github.com/raylib-zig/raylib-zig#7d4761b878f43671024ce197f721827b5355a67e",
             .hash = "raylib_zig-5.6.0-dev-KE8REGlNBQDR7NML06VBtT7gP3VZNY70E5WohAxzqrNn",
         },
+        .sdl3 = .{
+            .url = "git+https://codeberg.org/7Games/zig-sdl3?ref=v0.1.9#45ffa097ad183a72f81d42f9f8c0df0398663814",
+            .hash = "sdl3-0.1.9-NmT1Q2k0JwAtPRns9E3OO6qpqpvy8mn80guJ8L209AtI",
+        },
     },
     .paths = .{
         "build.zig",
